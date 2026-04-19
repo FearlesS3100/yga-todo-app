@@ -798,16 +798,19 @@ ON CONFLICT (id) DO NOTHING;
 -- ============================================================
 -- 7. REALTIME
 -- ============================================================
-ALTER PUBLICATION supabase_realtime ADD TABLE users;
-ALTER PUBLICATION supabase_realtime ADD TABLE workspaces;
-ALTER PUBLICATION supabase_realtime ADD TABLE workspace_members;
-ALTER PUBLICATION supabase_realtime ADD TABLE categories;
-ALTER PUBLICATION supabase_realtime ADD TABLE todos;
-ALTER PUBLICATION supabase_realtime ADD TABLE todo_assignees;
-ALTER PUBLICATION supabase_realtime ADD TABLE checklist_items;
-ALTER PUBLICATION supabase_realtime ADD TABLE comments;
-ALTER PUBLICATION supabase_realtime ADD TABLE notifications;
-ALTER PUBLICATION supabase_realtime ADD TABLE activity_logs;
+DO $$
+DECLARE t TEXT;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['users','workspaces','workspace_members','categories','todos','todo_assignees','checklist_items','todo_labels','attachments','comments','notifications','activity_logs']
+  LOOP
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_publication_tables
+      WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = t
+    ) THEN
+      EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE public.%I', t);
+    END IF;
+  END LOOP;
+END $$;
 
 -- ============================================================
 -- 8. ROW LEVEL SECURITY
@@ -1149,3 +1152,5 @@ ALTER TABLE IF EXISTS public.attachments REPLICA IDENTITY FULL;
 ALTER TABLE IF EXISTS public.comments REPLICA IDENTITY FULL;
 ALTER TABLE IF EXISTS public.users REPLICA IDENTITY FULL;
 ALTER TABLE IF EXISTS public.categories REPLICA IDENTITY FULL;
+ALTER TABLE IF EXISTS public.notifications REPLICA IDENTITY FULL;
+ALTER TABLE IF EXISTS public.activity_logs REPLICA IDENTITY FULL;

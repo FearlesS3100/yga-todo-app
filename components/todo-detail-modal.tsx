@@ -454,6 +454,25 @@ export function TodoDetailModal() {
   }, [selectedTodo?.id, isTodoModalOpen, loadReactions]);
   // ─────────────────────────────────────────────────────────────────────────────
 
+  // Realtime subscription for activity_logs + comments while modal is open
+  useEffect(() => {
+    if (!selectedTodo?.id || !isTodoModalOpen) return;
+
+    const todoId = selectedTodo.id;
+
+    const activityChannel = supabase
+      .channel(`activity-logs-modal:${todoId}`)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'activity_logs', filter: `todo_id=eq.${todoId}` }, () => {
+        setActivityReloadKey(k => k + 1);
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'comments', filter: `todo_id=eq.${todoId}` }, () => {
+        setActivityReloadKey(k => k + 1);
+      })
+      .subscribe();
+
+    return () => { void supabase.removeChannel(activityChannel); };
+  }, [selectedTodo?.id, isTodoModalOpen]);
+
   if (!selectedTodo) return null;
 
   const handleClose = () => {
@@ -491,24 +510,26 @@ export function TodoDetailModal() {
 
   const handleAddChecklistItem = () => {
     if (newChecklistItem.trim()) {
+      const freshTodo = useWorkspaceStore.getState().selectedTodo ?? selectedTodo;
       const newItem: ChecklistItem = {
         id: `check-${Date.now()}`,
         todo_id: selectedTodo.id,
         content: newChecklistItem.trim(),
         is_completed: false,
-        position: (selectedTodo.checklist_items?.length || 0),
+        position: (freshTodo.checklist_items?.length || 0),
         completed_at: null,
         completed_by: null,
       };
       updateTodo(selectedTodo.id, {
-        checklist_items: [...(selectedTodo.checklist_items || []), newItem]
+        checklist_items: [...(freshTodo.checklist_items || []), newItem]
       });
       setNewChecklistItem('');
     }
   };
 
   const handleToggleChecklistItem = (itemId: string) => {
-    const updatedItems = selectedTodo.checklist_items?.map(item => {
+    const freshTodo = useWorkspaceStore.getState().selectedTodo ?? selectedTodo;
+    const updatedItems = freshTodo.checklist_items?.map(item => {
       if (item.id === itemId) {
         return {
           ...item,
@@ -531,20 +552,22 @@ export function TodoDetailModal() {
   };
 
   const handleDeleteChecklistItem = (itemId: string) => {
-    const updatedItems = selectedTodo.checklist_items?.filter(item => item.id !== itemId);
+    const freshTodo = useWorkspaceStore.getState().selectedTodo ?? selectedTodo;
+    const updatedItems = freshTodo.checklist_items?.filter(item => item.id !== itemId);
     updateTodo(selectedTodo.id, { checklist_items: updatedItems });
   };
 
   const handleToggleAssignee = (userId: string) => {
-    const isAssigned = selectedTodo.assignees?.some(a => a.user_id === userId);
+    const freshTodo = useWorkspaceStore.getState().selectedTodo ?? selectedTodo;
+    const isAssigned = freshTodo.assignees?.some(a => a.user_id === userId);
     let updatedAssignees;
     
     if (isAssigned) {
-      updatedAssignees = selectedTodo.assignees?.filter(a => a.user_id !== userId);
+      updatedAssignees = freshTodo.assignees?.filter(a => a.user_id !== userId);
     } else {
       const user = users.find(u => u.id === userId);
       updatedAssignees = [
-        ...(selectedTodo.assignees || []),
+        ...(freshTodo.assignees || []),
         {
           id: `assign-${Date.now()}`,
           todo_id: selectedTodo.id,
@@ -558,15 +581,16 @@ export function TodoDetailModal() {
   };
 
   const handleToggleLabel = (labelId: string) => {
-    const hasLabel = selectedTodo.labels?.some(l => l.label_id === labelId);
+    const freshTodo = useWorkspaceStore.getState().selectedTodo ?? selectedTodo;
+    const hasLabel = freshTodo.labels?.some(l => l.label_id === labelId);
     let updatedLabels;
     
     if (hasLabel) {
-      updatedLabels = selectedTodo.labels?.filter(l => l.label_id !== labelId);
+      updatedLabels = freshTodo.labels?.filter(l => l.label_id !== labelId);
     } else {
       const label = labels.find(l => l.id === labelId);
       updatedLabels = [
-        ...(selectedTodo.labels || []),
+        ...(freshTodo.labels || []),
         {
           id: `tl-${Date.now()}`,
           todo_id: selectedTodo.id,
@@ -624,7 +648,9 @@ export function TodoDetailModal() {
     };
 
     // Deduplicate by id to prevent double-entry when realtime event arrives
-    const currentComments = selectedTodo.comments || [];
+    // Use fresh store state to avoid overwriting concurrent realtime-added comments
+    const freshTodo = useWorkspaceStore.getState().selectedTodo ?? selectedTodo;
+    const currentComments = freshTodo.comments || [];
     const alreadyPresent = currentComments.some((c) => c.id === data.id);
     if (!alreadyPresent) {
       updateTodo(selectedTodo.id, {
@@ -824,8 +850,9 @@ export function TodoDetailModal() {
         expires_at: attachmentData.expires_at ?? null,
       };
 
+      const freshTodo = useWorkspaceStore.getState().selectedTodo ?? selectedTodo;
       updateTodo(selectedTodo.id, {
-        attachments: [...(selectedTodo.attachments || []), newAttachment],
+        attachments: [...(freshTodo.attachments || []), newAttachment],
       });
 
       const { error: activityError } = await supabase.from('activity_logs').insert({
@@ -875,8 +902,9 @@ export function TodoDetailModal() {
     }
 
     // Update local state
+    const freshTodo = useWorkspaceStore.getState().selectedTodo ?? selectedTodo;
     updateTodo(selectedTodo.id, {
-      attachments: (selectedTodo.attachments || []).filter((a) => a.id !== att.id),
+      attachments: (freshTodo.attachments || []).filter((a) => a.id !== att.id),
     });
 
     // Log activity
@@ -1145,12 +1173,20 @@ export function TodoDetailModal() {
                         >
                           {/* Avatar — sadece ilk mesajda ya da farklı kişide */}
                           {!isSameAuthorAsPrev ? (
-                            <div
-                              className="w-6 h-6 rounded-full flex items-center justify-center text-white text-[10px] font-bold shrink-0 mb-0.5"
-                              style={{ backgroundColor: (comment as any).user?.avatar_color || '#6366f1' }}
-                            >
-                              {((comment as any).user?.display_name || 'U').charAt(0).toUpperCase()}
-                            </div>
+                            (comment as any).user?.avatar_url ? (
+                              <img
+                                src={(comment as any).user.avatar_url}
+                                alt={(comment as any).user.display_name || 'U'}
+                                className="w-6 h-6 rounded-full object-cover shrink-0 mb-0.5"
+                              />
+                            ) : (
+                              <div
+                                className="w-6 h-6 rounded-full flex items-center justify-center text-white text-[10px] font-bold shrink-0 mb-0.5"
+                                style={{ backgroundColor: (comment as any).user?.avatar_color || '#6366f1' }}
+                              >
+                                {((comment as any).user?.display_name || 'U').charAt(0).toUpperCase()}
+                              </div>
+                            )
                           ) : (
                             <div className="w-6 shrink-0" />
                           )}
@@ -1265,12 +1301,20 @@ export function TodoDetailModal() {
                   <div className="pt-2 border-t border-border/20 mt-2">
                     <div className="flex gap-2 items-center">
                       {currentUser && (
-                        <div
-                          className="w-6 h-6 rounded-full flex items-center justify-center text-white text-[10px] font-bold shrink-0"
-                          style={{ backgroundColor: currentUser.avatar_color }}
-                        >
-                          {currentUser.display_name.charAt(0).toUpperCase()}
-                        </div>
+                        currentUser.avatar_url ? (
+                          <img
+                            src={currentUser.avatar_url}
+                            alt={currentUser.display_name}
+                            className="w-6 h-6 rounded-full object-cover shrink-0"
+                          />
+                        ) : (
+                          <div
+                            className="w-6 h-6 rounded-full flex items-center justify-center text-white text-[10px] font-bold shrink-0"
+                            style={{ backgroundColor: currentUser.avatar_color }}
+                          >
+                            {currentUser.display_name.charAt(0).toUpperCase()}
+                          </div>
+                        )
                       )}
                       <div className="flex-1 relative">
                         <div className="flex items-center gap-2 bg-secondary/50 hover:bg-secondary/70 focus-within:bg-background border border-transparent focus-within:border-border/60 rounded-xl px-3 py-1.5 transition-all duration-200">
@@ -1304,9 +1348,13 @@ export function TodoDetailModal() {
                                 className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-secondary text-left transition-colors"
                                 onMouseDown={(e) => { e.preventDefault(); handleSelectMention(user.username || user.display_name); }}
                               >
-                                <div className="w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0" style={{ backgroundColor: user.avatar_color }}>
-                                  {user.display_name.charAt(0).toUpperCase()}
-                                </div>
+                                {user.avatar_url ? (
+                                  <img src={user.avatar_url} alt={user.display_name} className="w-6 h-6 rounded-full object-cover shrink-0" />
+                                ) : (
+                                  <div className="w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0" style={{ backgroundColor: user.avatar_color }}>
+                                    {user.display_name.charAt(0).toUpperCase()}
+                                  </div>
+                                )}
                                 <div className="min-w-0">
                                   <p className="font-medium text-foreground text-xs leading-tight">{user.display_name}</p>
                                   <p className="text-muted-foreground text-[10px]">@{user.username}</p>
@@ -1673,12 +1721,16 @@ export function TodoDetailModal() {
                         isAssigned ? "bg-primary/10" : "hover:bg-secondary"
                       )}
                     >
-                      <div 
-                        className="w-6 h-6 rounded-full flex items-center justify-center text-white text-xs"
-                        style={{ backgroundColor: user.avatar_color }}
-                      >
-                        {user.display_name.charAt(0).toUpperCase()}
-                      </div>
+                      {user.avatar_url ? (
+                        <img src={user.avatar_url} alt={user.display_name} className="w-6 h-6 rounded-full object-cover" />
+                      ) : (
+                        <div
+                          className="w-6 h-6 rounded-full flex items-center justify-center text-white text-xs"
+                          style={{ backgroundColor: user.avatar_color }}
+                        >
+                          {user.display_name.charAt(0).toUpperCase()}
+                        </div>
+                      )}
                       <span className="text-sm flex-1">{user.display_name}</span>
                       {isAssigned && (
                         <div className="w-2 h-2 rounded-full bg-primary" />

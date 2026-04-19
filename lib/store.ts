@@ -1322,7 +1322,20 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         todos,
         notifications,
         selectedTodo: state.selectedTodo
-          ? todos.find((todo) => todo.id === state.selectedTodo?.id) || null
+          ? (() => {
+              const fresh = todos.find((todo) => todo.id === state.selectedTodo!.id);
+              if (!fresh) return null;
+              // Preserve in-memory comments/attachments if they're more recent
+              return {
+                ...fresh,
+                comments: (state.selectedTodo!.comments?.length ?? 0) > (fresh.comments?.length ?? 0)
+                  ? state.selectedTodo!.comments
+                  : fresh.comments,
+                attachments: (state.selectedTodo!.attachments?.length ?? 0) > (fresh.attachments?.length ?? 0)
+                  ? state.selectedTodo!.attachments
+                  : fresh.attachments,
+              };
+            })()
           : null,
       }));
     } catch (error) {

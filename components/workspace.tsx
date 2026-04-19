@@ -142,6 +142,7 @@ export function Workspace() {
   const shownDueDateReminderIdsRef = useRef<Set<string>>(new Set());
   const workspaceRefreshTimeoutRef = useRef<number | null>(null);
   const workspaceFollowUpRefreshTimeoutRef = useRef<number | null>(null);
+  const workspaceFastRefreshTimeoutRef = useRef<number | null>(null);
   const coreChannelHealthyRef = useRef<boolean>(true);
 
   const scheduleWorkspaceRefresh = useCallback(() => {
@@ -164,6 +165,16 @@ export function Workspace() {
       workspaceFollowUpRefreshTimeoutRef.current = null;
       void loadWorkspaceData();
     }, 900);
+  }, [loadWorkspaceData]);
+
+  const scheduleFastRefresh = useCallback(() => {
+    if (workspaceFastRefreshTimeoutRef.current !== null) {
+      window.clearTimeout(workspaceFastRefreshTimeoutRef.current);
+    }
+    workspaceFastRefreshTimeoutRef.current = window.setTimeout(() => {
+      workspaceFastRefreshTimeoutRef.current = null;
+      void loadWorkspaceData();
+    }, 50);
   }, [loadWorkspaceData]);
 
   const showBrowserNotification = useCallback((title: string, body: string) => {
@@ -338,7 +349,7 @@ export function Workspace() {
       }
     }, 30000);
 
-    // Browser visibility (tab hidden / window minimized to tray)
+    // Primary: visibilitychange (works for tab switches and most minimize cases)
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'hidden') {
         // Update last_seen but keep status as online (tray = still "last seen X ago")
@@ -351,11 +362,28 @@ export function Workspace() {
       }
     };
 
+    // Bug 3 fix: visibilitychange is unreliable in Electron when the window is
+    // restored from the system tray. window focus/blur are fired reliably in
+    // Electron and act as a supplemental signal.
+    const handleWindowFocus = () => {
+      void updateUserStatus('online');
+    };
+
+    // Don't set offline on blur — only on explicit close (via the close dialog).
+    // Just update last_seen so other users see an accurate "last seen" timestamp.
+    const handleWindowBlur = () => {
+      void supabase.from('users').update({ last_seen: new Date().toISOString() }).eq('id', currentUserId);
+    };
+
     document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleWindowFocus);
+    window.addEventListener('blur', handleWindowBlur);
 
     return () => {
       window.clearInterval(heartbeat);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleWindowFocus);
+      window.removeEventListener('blur', handleWindowBlur);
     };
   }, [currentUserId, updateUserStatus]);
 
@@ -372,9 +400,8 @@ export function Workspace() {
       eventType: 'INSERT' | 'UPDATE' | 'DELETE',
       payload: Record<string, unknown>
     ) => {
-      const store = useWorkspaceStore.getState();
-
       if (eventType === 'INSERT') {
+        const store = useWorkspaceStore.getState();
         const row = payload as {
           id: string;
           todo_id: string;
@@ -420,6 +447,7 @@ export function Workspace() {
       }
 
       if (eventType === 'UPDATE') {
+        const store = useWorkspaceStore.getState();
         const row = payload as {
           id: string;
           todo_id: string;
@@ -453,6 +481,7 @@ export function Workspace() {
       }
 
       if (eventType === 'DELETE') {
+        const store = useWorkspaceStore.getState();
         const row = payload as { id?: string; todo_id?: string };
         if (!row.id) return false;
 
@@ -493,9 +522,8 @@ export function Workspace() {
       eventType: 'INSERT' | 'UPDATE' | 'DELETE',
       payload: Record<string, unknown>
     ): boolean => {
-      const store = useWorkspaceStore.getState();
-
       if (eventType === 'INSERT') {
+        const store = useWorkspaceStore.getState();
         const row = payload as {
           id?: string;
           workspace_id?: string;
@@ -633,23 +661,44 @@ export function Workspace() {
             expires_at: (r.expires_at as string | null) ?? null,
           }));
 
-          useWorkspaceStore.setState((state) => ({
-            todos: state.todos.map((t) =>
-              t.id === todoId
-                ? { ...t, assignees, labels, checklist_items: checklistItems, comments, attachments }
-                : t
-            ),
-            selectedTodo:
-              state.selectedTodo?.id === todoId
-                ? { ...state.selectedTodo, assignees, labels, checklist_items: checklistItems, comments, attachments }
-                : state.selectedTodo,
-          }));
+          useWorkspaceStore.setState((state) => {
+            const currentTodo = state.todos.find(t => t.id === todoId);
+            if (!currentTodo) return state; // todo was deleted while fetching
+
+            return {
+              todos: state.todos.map((t) =>
+                t.id === todoId
+                  ? {
+                      ...t,
+                      // Only update relations if the fetched data is more complete
+                      assignees: assignees.length >= (t.assignees?.length ?? 0) ? assignees : t.assignees,
+                      labels: labels.length >= (t.labels?.length ?? 0) ? labels : t.labels,
+                      checklist_items: checklistItems.length >= (t.checklist_items?.length ?? 0) ? checklistItems : t.checklist_items,
+                      comments: comments.length >= (t.comments?.length ?? 0) ? comments : t.comments,
+                      attachments: attachments.length >= (t.attachments?.length ?? 0) ? attachments : t.attachments,
+                    }
+                  : t
+              ),
+              selectedTodo:
+                state.selectedTodo?.id === todoId
+                  ? {
+                      ...state.selectedTodo,
+                      assignees: assignees.length >= (state.selectedTodo.assignees?.length ?? 0) ? assignees : state.selectedTodo.assignees,
+                      labels: labels.length >= (state.selectedTodo.labels?.length ?? 0) ? labels : state.selectedTodo.labels,
+                      checklist_items: checklistItems.length >= (state.selectedTodo.checklist_items?.length ?? 0) ? checklistItems : state.selectedTodo.checklist_items,
+                      comments: comments.length >= (state.selectedTodo.comments?.length ?? 0) ? comments : state.selectedTodo.comments,
+                      attachments: attachments.length >= (state.selectedTodo.attachments?.length ?? 0) ? attachments : state.selectedTodo.attachments,
+                    }
+                  : state.selectedTodo,
+            };
+          });
         })();
 
         return true;
       }
 
       if (eventType === 'UPDATE') {
+        const store = useWorkspaceStore.getState();
         const row = payload as Record<string, unknown>;
         const id = row.id as string | undefined;
         if (!id) return false;
@@ -743,9 +792,8 @@ export function Workspace() {
         assigned_at?: string | null;
       };
 
-      const store = useWorkspaceStore.getState();
-
       if (eventType === 'INSERT') {
+        const store = useWorkspaceStore.getState();
         if (!row.todo_id) return false;
         const todo = store.todos.find((t) => t.id === row.todo_id);
         if (!todo) return false;
@@ -776,6 +824,7 @@ export function Workspace() {
       }
 
       if (eventType === 'DELETE') {
+        const store = useWorkspaceStore.getState();
         const assigneeId = row.id;
         if (!assigneeId) return false;
 
@@ -818,9 +867,8 @@ export function Workspace() {
         label_id?: string;
       };
 
-      const store = useWorkspaceStore.getState();
-
       if (eventType === 'INSERT') {
+        const store = useWorkspaceStore.getState();
         if (!row.todo_id) return false;
         const todo = store.todos.find((t) => t.id === row.todo_id);
         if (!todo) return false;
@@ -850,6 +898,7 @@ export function Workspace() {
       }
 
       if (eventType === 'DELETE') {
+        const store = useWorkspaceStore.getState();
         const labelEntryId = row.id;
         if (!labelEntryId) return false;
 
@@ -896,9 +945,8 @@ export function Workspace() {
         completed_by?: string | null;
       };
 
-      const store = useWorkspaceStore.getState();
-
       if (eventType === 'INSERT') {
+        const store = useWorkspaceStore.getState();
         if (!row.todo_id) return false;
         const todo = store.todos.find((t) => t.id === row.todo_id);
         if (!todo) return false;
@@ -929,6 +977,7 @@ export function Workspace() {
       }
 
       if (eventType === 'UPDATE') {
+        const store = useWorkspaceStore.getState();
         if (!row.todo_id) return false;
         const todo = store.todos.find((t) => t.id === row.todo_id);
         if (!todo) return false;
@@ -959,6 +1008,7 @@ export function Workspace() {
       }
 
       if (eventType === 'DELETE') {
+        const store = useWorkspaceStore.getState();
         const checklistId = row.id;
         if (!checklistId) return false;
 
@@ -1009,11 +1059,10 @@ export function Workspace() {
       };
       if (!row.todo_id) return false;
 
-      const store = useWorkspaceStore.getState();
-      const todo = store.todos.find((t) => t.id === row.todo_id);
-      if (!todo) return false;
-
       if (eventType === 'INSERT') {
+        const store = useWorkspaceStore.getState();
+        const todo = store.todos.find((t) => t.id === row.todo_id);
+        if (!todo) return false;
         if (!row.id || !row.file_url || !row.file_name) return false;
         if ((todo.attachments ?? []).some((a) => a.id === row.id)) return true;
 
@@ -1044,6 +1093,9 @@ export function Workspace() {
       }
 
       if (eventType === 'DELETE') {
+        const store = useWorkspaceStore.getState();
+        const todo = store.todos.find((t) => t.id === row.todo_id);
+        if (!todo) return false;
         if (!row.id) return false;
         const updatedAttachments = (todo.attachments ?? []).filter((a) => a.id !== row.id);
 
@@ -1085,13 +1137,16 @@ export function Workspace() {
       };
       if (!row.id) return false;
 
-      const store = useWorkspaceStore.getState();
+      const store = useWorkspaceStore.getState(); // fresh read — inside UPDATE branch
       const existingUser = store.users.find((u) => u.id === row.id);
       if (!existingUser) return false;
 
-      const normalizeStatus = (s: unknown): 'online' | 'away' | 'offline' => {
+      // Bug 1 fix: null/undefined status falls back to the existing user's status
+      // instead of incorrectly defaulting to 'online' (happens when REPLICA IDENTITY
+      // is not FULL and the status column is absent from the UPDATE payload).
+      const normalizeStatus = (s: unknown, fallback: 'online' | 'away' | 'offline'): 'online' | 'away' | 'offline' => {
         if (s === 'online' || s === 'away' || s === 'offline') return s;
-        return 'online';
+        return fallback; // preserve existing status if payload is null/unknown
       };
 
       const updatedUser = {
@@ -1099,9 +1154,17 @@ export function Workspace() {
         ...(row.name !== undefined && { display_name: row.name?.trim() || existingUser.display_name }),
         ...(row.color !== undefined && { avatar_color: row.color || existingUser.avatar_color }),
         ...(row.avatar_url !== undefined && { avatar_url: typeof row.avatar_url === 'string' ? row.avatar_url : null }),
-        ...(row.status !== undefined && { status: normalizeStatus(row.status) }),
+        // Bug 1 fix: pass existingUser.status as fallback
+        ...(row.status !== undefined && { status: normalizeStatus(row.status, existingUser.status) }),
+        // Bug 2 note: when offline_reason is null in DB (typeof null === 'object'), this
+        // correctly sets offline_reason: null. Requires REPLICA IDENTITY FULL to reliably
+        // receive the field in partial UPDATE payloads.
         ...(row.offline_reason !== undefined && { offline_reason: typeof row.offline_reason === 'string' ? row.offline_reason : null }),
         ...(row.last_seen !== undefined && { last_seen: row.last_seen ?? existingUser.last_seen }),
+        // Bug 4 fix: when status is explicitly 'online', always clear offline_reason
+        // regardless of whether offline_reason was present in the payload. This handles
+        // the case where REPLICA IDENTITY is not FULL and only changed columns are sent.
+        ...(row.status === 'online' && { offline_reason: null }),
       };
 
       useWorkspaceStore.setState((state) => ({
@@ -1132,22 +1195,26 @@ export function Workspace() {
 
     // ── Channel subscription ─────────────────────────────────────────────────
 
+    // Remove any stale channel with the same name before creating a new one
+    const existingCh = supabase.getChannels().find(c => c.topic === 'realtime:workspace-core-sync');
+    if (existingCh) { void supabase.removeChannel(existingCh); }
+
     const channel = supabase
-      .channel(`workspace-core-sync:${currentUserId}`)
-      // todos — surgical patch with fallback
+      .channel('workspace-core-sync')
+      // todos — surgical patch with fast fallback (50ms) to handle position reindex quickly
       .on('postgres_changes', { event: '*', schema: 'public', table: 'todos' }, (payload) => {
         const data = (payload.eventType === 'DELETE' ? payload.old : payload.new) as Record<string, unknown>;
         const applied = applyTodoPatch(payload.eventType as 'INSERT' | 'UPDATE' | 'DELETE', data);
         if (!applied) {
-          scheduleWorkspaceRefresh();
+          scheduleFastRefresh();
         }
       })
-      // todo_assignees — surgical patch with fallback
+      // todo_assignees — surgical patch with fast fallback (50ms)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'todo_assignees' }, (payload) => {
         const data = (payload.eventType === 'DELETE' ? payload.old : payload.new) as Record<string, unknown>;
         const applied = applyTodoAssigneePatch(payload.eventType as 'INSERT' | 'UPDATE' | 'DELETE', data);
         if (!applied) {
-          scheduleWorkspaceRefresh();
+          scheduleFastRefresh();
         }
       })
       // todo_labels — surgical patch with fallback
@@ -1222,9 +1289,13 @@ export function Workspace() {
         window.clearTimeout(workspaceFollowUpRefreshTimeoutRef.current);
         workspaceFollowUpRefreshTimeoutRef.current = null;
       }
+      if (workspaceFastRefreshTimeoutRef.current !== null) {
+        window.clearTimeout(workspaceFastRefreshTimeoutRef.current);
+        workspaceFastRefreshTimeoutRef.current = null;
+      }
       void supabase.removeChannel(channel);
     };
-  }, [currentUserId, scheduleFollowUpWorkspaceRefresh, scheduleWorkspaceRefresh]);
+  }, [currentUserId, scheduleFollowUpWorkspaceRefresh, scheduleFastRefresh, scheduleWorkspaceRefresh]);
 
   // Health-aware fallback polling: only poll when realtime channel has errors
   useEffect(() => {
