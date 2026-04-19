@@ -1,0 +1,32 @@
+YGA Todo Kurulum Politikasý ve Son Kullanýcý Lisans Sözleþmesi
+
+Lütfen yazýlýmý kurmadan önce bu metni dikkatle okuyunuz. “Kabul Ediyorum” seçeneðinin iþaretlenmesi, aþaðýdaki þartlarýn baðlayýcý olarak kabul edildiði anlamýna gelir.
+
+1) Yürürlük ve Kabul
+Bu sözleþme, kullanýcý tarafýndan kabul edildiði anda yürürlüðe girer. Yazýlýmýn kurulmasý, çalýþtýrýlmasý veya kullanýlmaya devam edilmesi; tüm hüküm ve koþullarýn eksiksiz kabulü anlamýna gelir.
+
+2) Lisansýn Kapsamý
+Yazýlým, kullanýcýya münhasýr olmayan, devredilemeyen ve sýnýrlý bir kullaným lisansý ile sunulur. Lisans yalnýzca yasal amaçlarla ve bu sözleþmeye uygun kullaným hakký verir; mülkiyet hakký devri saðlamaz.
+
+3) Yasak Kullanýmlar
+Kullanýcý; yazýlýmý izinsiz çoðaltamaz, daðýtamaz, satamaz, kiralayamaz, alt lisanslayamaz veya üçüncü kiþilere kullandýramaz. Tersine mühendislik, kaynak koda eriþim giriþimi, teknik korumalarý aþma ve yazýlýmýn hukuka aykýrý amaçlarla kullanýmý kesin olarak yasaktýr.
+
+4) Veri/Gizlilik
+Yazýlým, hizmetin iþletilmesi için gerekli sýnýrlý teknik verileri iþleyebilir. Kiþisel verilerin iþlenmesi yürürlükteki mevzuata uygun þekilde gerçekleþtirilir. Kullanýcý, kendi cihaz güvenliði, eriþim bilgileri ve veri yedeklerinden sorumludur.
+
+5) Güncellemeler
+Yazýlým güvenlik, performans ve uyumluluk gerekleri doðrultusunda güncellenebilir. Güncellemeler; özelliklerde deðiþiklik, iyileþtirme veya bazý sürümlerin kullaným dýþý býrakýlmasý sonucunu doðurabilir.
+
+6) Fikri Mülkiyet
+Yazýlýma iliþkin tüm telif haklarý, marka haklarý ve diðer fikri mülkiyet haklarý hak sahibine aittir. Bu sözleþme, açýkça belirtilen lisans hakký dýþýnda kullanýcýya herhangi bir fikri mülkiyet hakký tanýmaz.
+
+7) Sorumluluk Sýnýrý
+Yazýlým, yürürlükteki hukukun izin verdiði ölçüde “olduðu gibi” sunulur. Hak sahibi; veri kaybý, gelir kaybý, iþ kesintisi veya dolaylý/arýzi zararlardan, kusur veya ihlal iddiasýna bakýlmaksýzýn sorumlu tutulamaz.
+
+8) Fesih
+Kullanýcýnýn bu sözleþmeye aykýrý davranmasý hâlinde lisans derhâl ve bildirimsiz sona erdirilebilir. Fesih durumunda kullanýcý yazýlýmý kullanmayý býrakmalý ve elindeki tüm kopyalarý kaldýrmalýdýr.
+
+9) Uygulanacak Hukuk
+Bu sözleþme Türkiye Cumhuriyeti hukukuna tabidir. Uyuþmazlýklarda, emredici hükümler saklý kalmak kaydýyla Ýstanbul (Merkez) mahkeme ve icra daireleri yetkilidir.
+
+Kuruluma devam eden kullanýcý, bu metindeki hüküm ve koþullarý kabul etmiþ sayýlýr.

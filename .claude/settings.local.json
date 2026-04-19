@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir C:\\\\Users\\\\Seymen\\\\Desktop\\\\license-generator)",
+      "Bash(dir \"C:\\\\Users\\\\Seymen\\\\Desktop\\\\b_zMEgbmj2ajS\" /b)",
+      "mcp__pencil__get_editor_state",
+      "Bash(dir C:\\\\Users\\\\Seymen\\\\Desktop\\\\b_zMEgbmj2ajS\\\\electron *)",
+      "Bash(node *)",
+      "Bash(powershell -Command \"Select-String -Path 'C:\\\\Users\\\\Seymen\\\\Desktop\\\\b_zMEgbmj2ajS\\\\components\\\\todo-detail-modal.tsx' -Pattern 'comment' | Select-Object LineNumber, Line | Format-Table -AutoSize\")",
+      "Bash(python3 *)",
+      "Bash(dir C:\\\\Users\\\\Seymen\\\\Desktop\\\\b_zMEgbmj2ajS\\\\lib\\\\ *)",
+      "Bash(dir \"c:\\\\Users\\\\Seymen\\\\Desktop\\\\b_zMEgbmj2ajS\" /s /b)"
+    ]
+  }
+}

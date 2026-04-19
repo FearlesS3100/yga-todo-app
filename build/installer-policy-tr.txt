@@ -1,0 +1,32 @@
+YGA Todo Kurulum Politikası ve Son Kullanıcı Lisans Sözleşmesi
+
+Lütfen yazılımı kurmadan önce bu metni dikkatle okuyunuz. “Kabul Ediyorum” seçeneğinin işaretlenmesi, aşağıdaki şartların bağlayıcı olarak kabul edildiği anlamına gelir.
+
+1) Yürürlük ve Kabul
+Bu sözleşme, kullanıcı tarafından kabul edildiği anda yürürlüğe girer. Yazılımın kurulması, çalıştırılması veya kullanılmaya devam edilmesi; tüm hüküm ve koşulların eksiksiz kabulü anlamına gelir.
+
+2) Lisansın Kapsamı
+Yazılım, kullanıcıya münhasır olmayan, devredilemeyen ve sınırlı bir kullanım lisansı ile sunulur. Lisans yalnızca yasal amaçlarla ve bu sözleşmeye uygun kullanım hakkı verir; mülkiyet hakkı devri sağlamaz.
+
+3) Yasak Kullanımlar
+Kullanıcı; yazılımı izinsiz çoğaltamaz, dağıtamaz, satamaz, kiralayamaz, alt lisanslayamaz veya üçüncü kişilere kullandıramaz. Tersine mühendislik, kaynak koda erişim girişimi, teknik korumaları aşma ve yazılımın hukuka aykırı amaçlarla kullanımı kesin olarak yasaktır.
+
+4) Veri/Gizlilik
+Yazılım, hizmetin işletilmesi için gerekli sınırlı teknik verileri işleyebilir. Kişisel verilerin işlenmesi yürürlükteki mevzuata uygun şekilde gerçekleştirilir. Kullanıcı, kendi cihaz güvenliği, erişim bilgileri ve veri yedeklerinden sorumludur.
+
+5) Güncellemeler
+Yazılım güvenlik, performans ve uyumluluk gerekleri doğrultusunda güncellenebilir. Güncellemeler; özelliklerde değişiklik, iyileştirme veya bazı sürümlerin kullanım dışı bırakılması sonucunu doğurabilir.
+
+6) Fikri Mülkiyet
+Yazılıma ilişkin tüm telif hakları, marka hakları ve diğer fikri mülkiyet hakları hak sahibine aittir. Bu sözleşme, açıkça belirtilen lisans hakkı dışında kullanıcıya herhangi bir fikri mülkiyet hakkı tanımaz.
+
+7) Sorumluluk Sınırı
+Yazılım, yürürlükteki hukukun izin verdiği ölçüde “olduğu gibi” sunulur. Hak sahibi; veri kaybı, gelir kaybı, iş kesintisi veya dolaylı/arızi zararlardan, kusur veya ihlal iddiasına bakılmaksızın sorumlu tutulamaz.
+
+8) Fesih
+Kullanıcının bu sözleşmeye aykırı davranması hâlinde lisans derhâl ve bildirimsiz sona erdirilebilir. Fesih durumunda kullanıcı yazılımı kullanmayı bırakmalı ve elindeki tüm kopyaları kaldırmalıdır.
+
+9) Uygulanacak Hukuk
+Bu sözleşme Türkiye Cumhuriyeti hukukuna tabidir. Uyuşmazlıklarda, emredici hükümler saklı kalmak kaydıyla İstanbul (Merkez) mahkeme ve icra daireleri yetkilidir.
+
+Kuruluma devam eden kullanıcı, bu metindeki hüküm ve koşulları kabul etmiş sayılır.
