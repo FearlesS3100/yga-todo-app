@@ -58,7 +58,7 @@ function mapUserRow(row: UserRow): AppUser {
   const fallbackName = row.username ?? 'User';
   const displayName = row.name?.trim() || fallbackName;
   const status: AppUser['status'] =
-    row.status === 'online' || row.status === 'away' || row.status === 'busy' || row.status === 'offline'
+    row.status === 'online' || row.status === 'away' || row.status === 'offline'
       ? row.status
       : 'offline';
 
@@ -67,7 +67,9 @@ function mapUserRow(row: UserRow): AppUser {
     username: row.username ?? displayName.toLowerCase().replace(/\s+/g, '-'),
     display_name: displayName,
     avatar_color: row.color || randomHexColor(),
+    avatar_url: null,
     status,
+    offline_reason: null,
     last_seen: row.last_seen || new Date().toISOString(),
     created_at: row.created_at || new Date().toISOString(),
   };

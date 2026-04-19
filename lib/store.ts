@@ -1166,7 +1166,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         attachmentRows = (!attachmentsRes.error ? (attachmentsRes.data ?? []) : []) as AttachmentRow[];
       }
 
-      let notifications: Notification[] = [];
+      let fetchedNotifications: Notification[] | null = null;
       if (effectiveCurrentUserId) {
         const notificationsRes = await supabase
           .from('notifications')
@@ -1178,7 +1178,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
           const notificationReadCache = loadNotificationReadCache();
           const idsNeedingSync: string[] = [];
 
-          notifications = ((notificationsRes.data ?? []) as NotificationRow[]).map((row) => {
+          fetchedNotifications = ((notificationsRes.data ?? []) as NotificationRow[]).map((row) => {
             const mapped = mapNotificationRow(row);
             const isDbRead = row.is_read ?? false;
 
@@ -1320,7 +1320,28 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         categories: categoriesWithTodos,
         labels,
         todos,
-        notifications,
+        notifications: (() => {
+          // If fetch was skipped (no user) or failed, preserve existing notifications
+          if (fetchedNotifications === null) return state.notifications;
+          // Merge: start with fetched data (authoritative), then layer in any
+          // in-memory entries the fetch didn't include (e.g. locally prepended
+          // ones that are newer than the last fetched entry or were missed).
+          const fetchedMap = new Map(fetchedNotifications.map((n) => [n.id, n]));
+          // Bring in existing in-memory notifications not present in the fetch
+          for (const existing of state.notifications) {
+            if (!fetchedMap.has(existing.id)) {
+              fetchedMap.set(existing.id, existing);
+            }
+          }
+          // Sort descending by created_at
+          return Array.from(fetchedMap.values()).sort(
+            (a, b) => {
+              const ta = a.created_at ? Date.parse(a.created_at) : 0;
+              const tb = b.created_at ? Date.parse(b.created_at) : 0;
+              return tb - ta;
+            }
+          );
+        })(),
         selectedTodo: state.selectedTodo
           ? (() => {
               const fresh = todos.find((todo) => todo.id === state.selectedTodo!.id);
