@@ -2159,38 +2159,52 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     const now = new Date().toISOString();
     const previousTodos = get().todos;
 
-    // Build the new todos list with the moved todo inserted at targetIndex,
-    // then reindex all todos in the target category to avoid position collisions.
+    // Determine source category before mutation
+    const sourceCategoryId = previousTodos.find((t) => t.id === todoId)?.category_id;
+
+    // Build the new todos list atomically:
+    // 1. Update the moved todo's category_id
+    // 2. Reindex source category (excluding moved todo)
+    // 3. Reindex target category (including moved todo at targetIndex)
     set((state) => {
-      // First pass: update the moved todo's category and provisional position
-      const withMovedTodo = state.todos.map((todo) => {
-        if (todo.id !== todoId) return todo;
-        return { ...todo, category_id: targetCategoryId, position: targetIndex, updated_at: now };
-      });
+      const movedTodo = state.todos.find((t) => t.id === todoId);
+      if (!movedTodo) return state;
 
-      // Reindex todos in the target category by their sorted position so that
-      // the moved todo lands exactly at targetIndex and no two items share a position.
-      const targetCategoryTodos = withMovedTodo
-        .filter((t) => t.category_id === targetCategoryId)
-        .sort((a, b) => {
-          // The moved todo already has position = targetIndex; sort stably
-          if (a.id === todoId) return a.position - b.position;
-          if (b.id === todoId) return a.position - b.position;
-          return a.position - b.position;
-        });
+      const isMovingWithinCategory = movedTodo.category_id === targetCategoryId;
 
-      // Separate moved todo out and splice it in at targetIndex
-      const otherTargetTodos = targetCategoryTodos.filter((t) => t.id !== todoId);
-      const movedTodo = targetCategoryTodos.find((t) => t.id === todoId)!;
+      // Build source category list (excluding moved todo) and reindex
+      const sourceTodos = isMovingWithinCategory
+        ? [] // handled as part of target reindex below
+        : state.todos
+            .filter((t) => t.category_id === movedTodo.category_id && t.id !== todoId)
+            .sort((a, b) => a.position - b.position)
+            .map((t, idx) => ({ ...t, position: idx }));
+
+      // Build target category list (other todos) and splice moved todo in
+      const otherTargetTodos = state.todos
+        .filter((t) => t.category_id === targetCategoryId && t.id !== todoId)
+        .sort((a, b) => a.position - b.position);
+
+      const updatedMovedTodo = { ...movedTodo, category_id: targetCategoryId, updated_at: now };
       const reorderedTarget = [...otherTargetTodos];
-      reorderedTarget.splice(targetIndex, 0, movedTodo);
+      const clampedIndex = Math.min(Math.max(targetIndex, 0), reorderedTarget.length);
+      reorderedTarget.splice(clampedIndex, 0, updatedMovedTodo);
+      const targetTodos = reorderedTarget.map((t, idx) => ({ ...t, position: idx }));
 
-      const reindexed = reorderedTarget.map((todo, idx) => ({ ...todo, position: idx }));
-      const reindexMap = new Map(reindexed.map((t) => [t.id, t.position]));
+      // Build a unified position map for all affected todos
+      const positionMap = new Map<string, { position: number; category_id: string }>();
+      for (const t of sourceTodos) {
+        positionMap.set(t.id, { position: t.position, category_id: t.category_id });
+      }
+      for (const t of targetTodos) {
+        positionMap.set(t.id, { position: t.position, category_id: t.category_id });
+      }
 
-      const updatedTodos = withMovedTodo.map((todo) =>
-        reindexMap.has(todo.id) ? { ...todo, position: reindexMap.get(todo.id)! } : todo
-      );
+      const updatedTodos = state.todos.map((t) => {
+        const patch = positionMap.get(t.id);
+        if (!patch) return t;
+        return { ...t, position: patch.position, category_id: patch.category_id };
+      });
 
       return { todos: updatedTodos };
     });
@@ -2216,30 +2230,41 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         return;
       }
 
-      // After the move succeeds, call reorder_todos RPC for the target category
-      // to persist the collision-free positions for all todos in that category.
+      // After the move succeeds, reorder both source and target categories to persist
+      // collision-free positions for all affected todos.
       const currentTodos = get().todos;
-      const targetCategoryOrdered = currentTodos
-        .filter((t) => t.category_id === targetCategoryId)
-        .sort((a, b) => a.position - b.position);
-      const todoIds = targetCategoryOrdered.map((t) => t.id);
 
-      const { error: rpcError } = await supabase.rpc('reorder_todos', {
-        p_category_id: targetCategoryId,
-        p_todo_ids: todoIds,
-      });
+      const reorderCategory = async (categoryId: string) => {
+        const ordered = currentTodos
+          .filter((t) => t.category_id === categoryId)
+          .sort((a, b) => a.position - b.position);
+        const ids = ordered.map((t) => t.id);
 
-      if (rpcError) {
-        // RPC not available — fall back to individual position updates
-        await Promise.all(
-          targetCategoryOrdered.map((todo) =>
-            supabase
-              .from('todos')
-              .update({ position: todo.position })
-              .eq('id', todo.id)
-              .select('id')
-          )
-        );
+        const { error: rpcError } = await supabase.rpc('reorder_todos', {
+          p_category_id: categoryId,
+          p_todo_ids: ids,
+        });
+
+        if (rpcError) {
+          // RPC not available — fall back to individual position updates
+          await Promise.all(
+            ordered.map((todo) =>
+              supabase
+                .from('todos')
+                .update({ position: todo.position })
+                .eq('id', todo.id)
+                .select('id')
+            )
+          );
+        }
+      };
+
+      // Reorder target category
+      await reorderCategory(targetCategoryId);
+
+      // Reorder source category if different from target
+      if (sourceCategoryId && sourceCategoryId !== targetCategoryId) {
+        await reorderCategory(sourceCategoryId);
       }
     })();
   },

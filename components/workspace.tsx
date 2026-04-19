@@ -650,66 +650,64 @@ export function Workspace() {
       }
 
       if (eventType === 'UPDATE') {
-        const row = payload as {
-          id?: string;
-          category_id?: string;
-          status?: string | null;
-          priority?: string | null;
-          title?: string | null;
-          description?: string | null;
-          position?: number | null;
-          due_date?: string | null;
-          start_date?: string | null;
-          completed_at?: string | null;
-          estimated_hours?: number | null;
-          actual_hours?: number | null;
-          progress?: number | null;
-          is_recurring?: boolean | null;
-          recurrence_pattern?: string | null;
-          updated_at?: string | null;
-        };
-        if (!row.id) return false;
+        const row = payload as Record<string, unknown>;
+        const id = row.id as string | undefined;
+        if (!id) return false;
 
-        const existing = store.todos.find((t) => t.id === row.id);
+        const existing = store.todos.find((t) => t.id === id);
         if (!existing) return false;
+
+        // With REPLICA IDENTITY FULL, all columns are present. But guard
+        // against null/undefined wiping valid relational keys.
+        const safeCategoryId = (typeof row.category_id === 'string' && row.category_id)
+          ? row.category_id
+          : existing.category_id;
+
+        const normalizeStatus = (s: unknown): Todo['status'] => {
+          if (s === 'todo' || s === 'in_progress' || s === 'in_review' || s === 'blocked' || s === 'done' || s === 'cancelled') return s;
+          if (s === 'review') return 'in_review';
+          if (s === 'archived') return 'cancelled';
+          return existing.status;
+        };
+
+        const normalizePriority = (p: unknown): Todo['priority'] => {
+          if (p === 'urgent' || p === 'high' || p === 'medium' || p === 'low' || p === 'none') return p;
+          return existing.priority;
+        };
 
         const updatedTodo: Todo = {
           ...existing,
-          ...(row.category_id !== undefined && { category_id: row.category_id }),
-          ...(row.title !== undefined && { title: row.title ?? '' }),
-          ...(row.description !== undefined && { description: row.description ?? '' }),
-          ...(row.status !== undefined && {
-            status: (() => {
-              const s = row.status;
-              if (s === 'todo' || s === 'in_progress' || s === 'in_review' || s === 'blocked' || s === 'done' || s === 'cancelled') return s;
-              if (s === 'review') return 'in_review';
-              if (s === 'archived') return 'cancelled';
-              return existing.status;
-            })(),
-          }),
-          ...(row.priority !== undefined && {
-            priority: (() => {
-              const p = row.priority;
-              if (p === 'urgent' || p === 'high' || p === 'medium' || p === 'low' || p === 'none') return p;
-              return existing.priority;
-            })(),
-          }),
-          ...(row.position !== undefined && { position: row.position ?? existing.position }),
-          ...(row.due_date !== undefined && { due_date: row.due_date ?? null }),
-          ...(row.start_date !== undefined && { start_date: row.start_date ?? null }),
-          ...(row.completed_at !== undefined && { completed_at: row.completed_at ?? null }),
-          ...(row.estimated_hours !== undefined && { estimated_hours: row.estimated_hours ?? null }),
-          ...(row.actual_hours !== undefined && { actual_hours: row.actual_hours ?? null }),
-          ...(row.progress !== undefined && { progress: row.progress ?? existing.progress }),
-          ...(row.is_recurring !== undefined && { is_recurring: row.is_recurring ?? false }),
-          ...(row.recurrence_pattern !== undefined && { recurrence_pattern: row.recurrence_pattern ?? null }),
-          ...(row.updated_at !== undefined && { updated_at: row.updated_at ?? existing.updated_at }),
+          category_id: safeCategoryId,
+          parent_id: row.parent_id !== undefined ? (row.parent_id as string | null) : existing.parent_id,
+          title: typeof row.title === 'string' ? row.title : existing.title,
+          description: typeof row.description === 'string' ? row.description : existing.description,
+          status: row.status !== undefined ? normalizeStatus(row.status) : existing.status,
+          priority: row.priority !== undefined ? normalizePriority(row.priority) : existing.priority,
+          position: typeof row.position === 'number' ? row.position : existing.position,
+          due_date: row.due_date !== undefined ? (row.due_date as string | null) : existing.due_date,
+          start_date: row.start_date !== undefined ? (row.start_date as string | null) : existing.start_date,
+          completed_at: row.completed_at !== undefined ? (row.completed_at as string | null) : existing.completed_at,
+          estimated_hours: row.estimated_hours !== undefined ? (row.estimated_hours as number | null) : existing.estimated_hours,
+          actual_hours: row.actual_hours !== undefined ? (row.actual_hours as number | null) : existing.actual_hours,
+          progress: typeof row.progress === 'number' ? row.progress : existing.progress,
+          is_recurring: typeof row.is_recurring === 'boolean' ? row.is_recurring : existing.is_recurring,
+          recurrence_pattern: row.recurrence_pattern !== undefined ? (row.recurrence_pattern as string | null) : existing.recurrence_pattern,
+          updated_at: typeof row.updated_at === 'string' ? row.updated_at : existing.updated_at,
+          // Preserve relations — never overwrite from scalar payload
+          assignees: existing.assignees,
+          labels: existing.labels,
+          checklist_items: existing.checklist_items,
+          comments: existing.comments,
+          attachments: existing.attachments,
+          subtasks: existing.subtasks,
+          dependencies: existing.dependencies,
+          time_entries: existing.time_entries,
         };
 
         useWorkspaceStore.setState((state) => ({
-          todos: state.todos.map((t) => (t.id === row.id ? updatedTodo : t)),
+          todos: state.todos.map((t) => (t.id === id ? updatedTodo : t)),
           selectedTodo:
-            state.selectedTodo?.id === row.id
+            state.selectedTodo?.id === id
               ? { ...state.selectedTodo, ...updatedTodo }
               : state.selectedTodo,
         }));
@@ -744,13 +742,13 @@ export function Workspace() {
         user_id?: string;
         assigned_at?: string | null;
       };
-      if (!row.todo_id) return false;
 
       const store = useWorkspaceStore.getState();
-      const todo = store.todos.find((t) => t.id === row.todo_id);
-      if (!todo) return false;
 
       if (eventType === 'INSERT') {
+        if (!row.todo_id) return false;
+        const todo = store.todos.find((t) => t.id === row.todo_id);
+        if (!todo) return false;
         if (!row.id || !row.user_id) return false;
         // Dedupe
         if ((todo.assignees ?? []).some((a) => a.id === row.id)) return true;
@@ -778,15 +776,26 @@ export function Workspace() {
       }
 
       if (eventType === 'DELETE') {
-        if (!row.id) return false;
-        const updatedAssignees = (todo.assignees ?? []).filter((a) => a.id !== row.id);
+        const assigneeId = row.id;
+        if (!assigneeId) return false;
+
+        // If todo_id missing (REPLICA IDENTITY DEFAULT), search all todos
+        let todoId = row.todo_id;
+        if (!todoId) {
+          const found = store.todos.find((t) => t.assignees?.some((a) => a.id === assigneeId));
+          todoId = found?.id;
+        }
+        if (!todoId) return false;
+
+        const targetTodo = store.todos.find((t) => t.id === todoId);
+        const updatedAssignees = (targetTodo?.assignees ?? []).filter((a) => a.id !== assigneeId);
 
         useWorkspaceStore.setState((state) => ({
           todos: state.todos.map((t) =>
-            t.id === row.todo_id ? { ...t, assignees: updatedAssignees } : t
+            t.id === todoId ? { ...t, assignees: updatedAssignees } : t
           ),
           selectedTodo:
-            state.selectedTodo?.id === row.todo_id
+            state.selectedTodo?.id === todoId
               ? { ...state.selectedTodo, assignees: updatedAssignees }
               : state.selectedTodo,
         }));
@@ -808,13 +817,13 @@ export function Workspace() {
         todo_id?: string;
         label_id?: string;
       };
-      if (!row.todo_id) return false;
 
       const store = useWorkspaceStore.getState();
-      const todo = store.todos.find((t) => t.id === row.todo_id);
-      if (!todo) return false;
 
       if (eventType === 'INSERT') {
+        if (!row.todo_id) return false;
+        const todo = store.todos.find((t) => t.id === row.todo_id);
+        if (!todo) return false;
         if (!row.id || !row.label_id) return false;
         // Dedupe
         if ((todo.labels ?? []).some((l) => l.id === row.id)) return true;
@@ -841,15 +850,26 @@ export function Workspace() {
       }
 
       if (eventType === 'DELETE') {
-        if (!row.id) return false;
-        const updatedLabels = (todo.labels ?? []).filter((l) => l.id !== row.id);
+        const labelEntryId = row.id;
+        if (!labelEntryId) return false;
+
+        // If todo_id missing (REPLICA IDENTITY DEFAULT), search all todos
+        let todoId = row.todo_id;
+        if (!todoId) {
+          const found = store.todos.find((t) => t.labels?.some((l) => l.id === labelEntryId));
+          todoId = found?.id;
+        }
+        if (!todoId) return false;
+
+        const targetTodo = store.todos.find((t) => t.id === todoId);
+        const updatedLabels = (targetTodo?.labels ?? []).filter((l) => l.id !== labelEntryId);
 
         useWorkspaceStore.setState((state) => ({
           todos: state.todos.map((t) =>
-            t.id === row.todo_id ? { ...t, labels: updatedLabels } : t
+            t.id === todoId ? { ...t, labels: updatedLabels } : t
           ),
           selectedTodo:
-            state.selectedTodo?.id === row.todo_id
+            state.selectedTodo?.id === todoId
               ? { ...state.selectedTodo, labels: updatedLabels }
               : state.selectedTodo,
         }));
@@ -875,13 +895,13 @@ export function Workspace() {
         completed_at?: string | null;
         completed_by?: string | null;
       };
-      if (!row.todo_id) return false;
 
       const store = useWorkspaceStore.getState();
-      const todo = store.todos.find((t) => t.id === row.todo_id);
-      if (!todo) return false;
 
       if (eventType === 'INSERT') {
+        if (!row.todo_id) return false;
+        const todo = store.todos.find((t) => t.id === row.todo_id);
+        if (!todo) return false;
         if (!row.id) return false;
         if ((todo.checklist_items ?? []).some((c) => c.id === row.id)) return true;
 
@@ -909,6 +929,9 @@ export function Workspace() {
       }
 
       if (eventType === 'UPDATE') {
+        if (!row.todo_id) return false;
+        const todo = store.todos.find((t) => t.id === row.todo_id);
+        if (!todo) return false;
         if (!row.id) return false;
         const updatedItems = (todo.checklist_items ?? []).map((c) =>
           c.id === row.id
@@ -936,15 +959,26 @@ export function Workspace() {
       }
 
       if (eventType === 'DELETE') {
-        if (!row.id) return false;
-        const updatedItems = (todo.checklist_items ?? []).filter((c) => c.id !== row.id);
+        const checklistId = row.id;
+        if (!checklistId) return false;
+
+        // If todo_id missing (REPLICA IDENTITY DEFAULT), search all todos
+        let todoId = row.todo_id;
+        if (!todoId) {
+          const found = store.todos.find((t) => t.checklist_items?.some((c) => c.id === checklistId));
+          todoId = found?.id;
+        }
+        if (!todoId) return false;
+
+        const targetTodo = store.todos.find((t) => t.id === todoId);
+        const updatedItems = (targetTodo?.checklist_items ?? []).filter((c) => c.id !== checklistId);
 
         useWorkspaceStore.setState((state) => ({
           todos: state.todos.map((t) =>
-            t.id === row.todo_id ? { ...t, checklist_items: updatedItems } : t
+            t.id === todoId ? { ...t, checklist_items: updatedItems } : t
           ),
           selectedTodo:
-            state.selectedTodo?.id === row.todo_id
+            state.selectedTodo?.id === todoId
               ? { ...state.selectedTodo, checklist_items: updatedItems }
               : state.selectedTodo,
         }));
