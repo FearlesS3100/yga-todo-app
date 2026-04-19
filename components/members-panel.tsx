@@ -138,11 +138,6 @@ export function MembersPanel() {
                             )}>
                               {user.display_name}
                             </span>
-                            {user.offline_reason && (
-                              <span className="text-[11px] text-yellow-500/55 italic truncate min-w-0 max-w-[52%] leading-none">
-                                ({user.offline_reason})
-                              </span>
-                            )}
                             {isMe && (
                               <span className="shrink-0 text-[9px] font-bold text-primary/70 bg-primary/10 px-1.5 py-0.5 rounded-full leading-none tracking-wide">
                                 SEN
@@ -169,6 +164,17 @@ export function MembersPanel() {
                               </>
                             )}
                           </div>
+
+                          {user.offline_reason && user.status === 'offline' && (
+                            <div className="mt-[3px] min-w-0">
+                              <span
+                                className="text-[11px] text-yellow-500/55 italic truncate block leading-none"
+                                title={user.offline_reason}
+                              >
+                                {user.offline_reason}
+                              </span>
+                            </div>
+                          )}
                         </div>
                       </div>
                     );

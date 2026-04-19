@@ -14,7 +14,7 @@ import { CreateTodoModal } from './create-todo-modal';
 import { TodoDetailModal } from './todo-detail-modal';
 import { supabase } from '@/lib/supabase';
 import { useWorkspaceStore } from '@/lib/store';
-import type { Notification as AppNotification, Comment } from '@/lib/types';
+import type { Notification as AppNotification, Comment, Todo, TodoAssignee, TodoLabel, ChecklistItem, Attachment } from '@/lib/types';
 import {
   Dialog,
   DialogContent,
@@ -482,60 +482,692 @@ export function Workspace() {
       return false;
     };
 
-    const nonCommentTables = [
-      'users',
-      'categories',
-      'todos',
-      'todo_assignees',
-      'checklist_items',
-      'labels',
-      'todo_labels',
-      'attachments',
-    ];
+    // ── Surgical patch helpers ──────────────────────────────────────────────
 
-    const followUpTables = new Set([
-      'categories',
-      'todos',
-      'todo_assignees',
-      'todo_labels',
-      'checklist_items',
-      'attachments',
-    ]);
+    /**
+     * Patch todos table changes directly in the store without a full reload.
+     * For INSERT, builds a minimal Todo immediately and fetches relations async.
+     * Returns true if applied, false if fallback reload is needed.
+     */
+    const applyTodoPatch = (
+      eventType: 'INSERT' | 'UPDATE' | 'DELETE',
+      payload: Record<string, unknown>
+    ): boolean => {
+      const store = useWorkspaceStore.getState();
 
-    let channelBase = supabase.channel(`workspace-core-sync:${currentUserId}`);
+      if (eventType === 'INSERT') {
+        const row = payload as {
+          id?: string;
+          workspace_id?: string;
+          category_id?: string;
+          parent_id?: string | null;
+          title?: string | null;
+          description?: string | null;
+          status?: string | null;
+          priority?: string | null;
+          position?: number | null;
+          due_date?: string | null;
+          start_date?: string | null;
+          completed_at?: string | null;
+          estimated_hours?: number | null;
+          actual_hours?: number | null;
+          progress?: number | null;
+          is_recurring?: boolean | null;
+          recurrence_pattern?: string | null;
+          recurrence_rule?: unknown;
+          created_by?: string | null;
+          created_at?: string | null;
+          updated_at?: string | null;
+        };
+        if (!row.id || !row.category_id) return false;
+        // Dedupe
+        if (store.todos.some((t) => t.id === row.id)) return true;
 
-    // Register non-comment tables
-    channelBase = nonCommentTables.reduce((acc, table) => {
-      return acc.on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table },
-        (payload) => {
+        const newTodo: Todo = {
+          id: row.id,
+          workspace_id: row.workspace_id ?? '',
+          category_id: row.category_id,
+          parent_id: row.parent_id ?? null,
+          title: row.title ?? '',
+          description: row.description ?? '',
+          status: (() => {
+            const s = row.status;
+            if (s === 'todo' || s === 'in_progress' || s === 'in_review' || s === 'blocked' || s === 'done' || s === 'cancelled') return s;
+            if (s === 'review') return 'in_review';
+            if (s === 'archived') return 'cancelled';
+            return 'todo';
+          })(),
+          priority: (() => {
+            const p = row.priority;
+            if (p === 'urgent' || p === 'high' || p === 'medium' || p === 'low' || p === 'none') return p;
+            return 'none';
+          })(),
+          position: row.position ?? 0,
+          due_date: row.due_date ?? null,
+          start_date: row.start_date ?? null,
+          completed_at: row.completed_at ?? null,
+          estimated_hours: row.estimated_hours ?? null,
+          actual_hours: row.actual_hours ?? null,
+          progress: row.progress ?? 0,
+          is_recurring: row.is_recurring ?? false,
+          recurrence_pattern: row.recurrence_pattern ?? null,
+          created_by: row.created_by ?? '',
+          created_at: row.created_at ?? new Date().toISOString(),
+          updated_at: row.updated_at ?? new Date().toISOString(),
+          assignees: [],
+          labels: [],
+          checklist_items: [],
+          subtasks: [],
+          comments: [],
+          attachments: [],
+          dependencies: [],
+          time_entries: [],
+        };
+
+        useWorkspaceStore.setState((state) => ({
+          todos: [...state.todos, newTodo],
+        }));
+
+        // Background fetch of relations for this new todo
+        void (async () => {
+          const todoId = row.id!;
+          const [assigneesRes, labelsRes, checklistRes, commentsRes, attachmentsRes] = await Promise.all([
+            supabase.from('todo_assignees').select('*').eq('todo_id', todoId),
+            supabase.from('todo_labels').select('*').eq('todo_id', todoId),
+            supabase.from('checklist_items').select('*').eq('todo_id', todoId).order('position', { ascending: true }),
+            supabase.from('comments').select('id, todo_id, parent_id, content, is_edited, edited_at, created_by, created_at, updated_at').eq('todo_id', todoId).order('created_at', { ascending: true }),
+            supabase.from('attachments').select('id, todo_id, comment_id, file_name, file_type, file_size, file_url, thumbnail_url, uploaded_by, created_at, expires_at').eq('todo_id', todoId).order('created_at', { ascending: true }),
+          ]);
+
+          const freshStore = useWorkspaceStore.getState();
+          const usersById = new Map(freshStore.users.map((u) => [u.id, u]));
+          const labelsById = new Map(freshStore.labels.map((l) => [l.id, l]));
+
+          const assignees: TodoAssignee[] = (assigneesRes.data ?? []).map((r: Record<string, unknown>) => ({
+            id: r.id as string,
+            todo_id: r.todo_id as string,
+            user_id: r.user_id as string,
+            assigned_at: (r.assigned_at as string | null) ?? new Date().toISOString(),
+            user: usersById.get(r.user_id as string),
+          }));
+
+          const labels: TodoLabel[] = (labelsRes.data ?? []).map((r: Record<string, unknown>) => ({
+            id: r.id as string,
+            todo_id: r.todo_id as string,
+            label_id: r.label_id as string,
+            label: labelsById.get(r.label_id as string),
+          }));
+
+          const checklistItems: ChecklistItem[] = (checklistRes.data ?? []).map((r: Record<string, unknown>) => ({
+            id: r.id as string,
+            todo_id: r.todo_id as string,
+            content: (r.content as string | null) ?? '',
+            is_completed: (r.is_completed as boolean | null) ?? false,
+            position: (r.position as number | null) ?? 0,
+            completed_at: (r.completed_at as string | null) ?? null,
+            completed_by: (r.completed_by as string | null) ?? null,
+          }));
+
+          const comments: Comment[] = (commentsRes.data ?? []).map((r: Record<string, unknown>) => ({
+            id: r.id as string,
+            todo_id: r.todo_id as string,
+            user_id: (r.created_by as string | null) ?? '',
+            parent_id: (r.parent_id as string | null) ?? null,
+            content: (r.content as string) ?? '',
+            is_edited: (r.is_edited as boolean | null) ?? false,
+            created_at: r.created_at as string,
+            updated_at: r.updated_at as string,
+            user: usersById.get((r.created_by as string | null) ?? ''),
+          }));
+
+          const attachments: Attachment[] = (attachmentsRes.data ?? []).map((r: Record<string, unknown>) => ({
+            id: r.id as string,
+            todo_id: r.todo_id as string,
+            file_name: r.file_name as string,
+            file_type: (r.file_type as string | null) ?? '',
+            file_size: (r.file_size as number | null) ?? 0,
+            file_url: r.file_url as string,
+            thumbnail_url: (r.thumbnail_url as string | null) ?? null,
+            uploaded_by: (r.uploaded_by as string | null) ?? '',
+            created_at: r.created_at as string,
+            expires_at: (r.expires_at as string | null) ?? null,
+          }));
+
+          useWorkspaceStore.setState((state) => ({
+            todos: state.todos.map((t) =>
+              t.id === todoId
+                ? { ...t, assignees, labels, checklist_items: checklistItems, comments, attachments }
+                : t
+            ),
+            selectedTodo:
+              state.selectedTodo?.id === todoId
+                ? { ...state.selectedTodo, assignees, labels, checklist_items: checklistItems, comments, attachments }
+                : state.selectedTodo,
+          }));
+        })();
+
+        return true;
+      }
+
+      if (eventType === 'UPDATE') {
+        const row = payload as {
+          id?: string;
+          category_id?: string;
+          status?: string | null;
+          priority?: string | null;
+          title?: string | null;
+          description?: string | null;
+          position?: number | null;
+          due_date?: string | null;
+          start_date?: string | null;
+          completed_at?: string | null;
+          estimated_hours?: number | null;
+          actual_hours?: number | null;
+          progress?: number | null;
+          is_recurring?: boolean | null;
+          recurrence_pattern?: string | null;
+          updated_at?: string | null;
+        };
+        if (!row.id) return false;
+
+        const existing = store.todos.find((t) => t.id === row.id);
+        if (!existing) return false;
+
+        const updatedTodo: Todo = {
+          ...existing,
+          ...(row.category_id !== undefined && { category_id: row.category_id }),
+          ...(row.title !== undefined && { title: row.title ?? '' }),
+          ...(row.description !== undefined && { description: row.description ?? '' }),
+          ...(row.status !== undefined && {
+            status: (() => {
+              const s = row.status;
+              if (s === 'todo' || s === 'in_progress' || s === 'in_review' || s === 'blocked' || s === 'done' || s === 'cancelled') return s;
+              if (s === 'review') return 'in_review';
+              if (s === 'archived') return 'cancelled';
+              return existing.status;
+            })(),
+          }),
+          ...(row.priority !== undefined && {
+            priority: (() => {
+              const p = row.priority;
+              if (p === 'urgent' || p === 'high' || p === 'medium' || p === 'low' || p === 'none') return p;
+              return existing.priority;
+            })(),
+          }),
+          ...(row.position !== undefined && { position: row.position ?? existing.position }),
+          ...(row.due_date !== undefined && { due_date: row.due_date ?? null }),
+          ...(row.start_date !== undefined && { start_date: row.start_date ?? null }),
+          ...(row.completed_at !== undefined && { completed_at: row.completed_at ?? null }),
+          ...(row.estimated_hours !== undefined && { estimated_hours: row.estimated_hours ?? null }),
+          ...(row.actual_hours !== undefined && { actual_hours: row.actual_hours ?? null }),
+          ...(row.progress !== undefined && { progress: row.progress ?? existing.progress }),
+          ...(row.is_recurring !== undefined && { is_recurring: row.is_recurring ?? false }),
+          ...(row.recurrence_pattern !== undefined && { recurrence_pattern: row.recurrence_pattern ?? null }),
+          ...(row.updated_at !== undefined && { updated_at: row.updated_at ?? existing.updated_at }),
+        };
+
+        useWorkspaceStore.setState((state) => ({
+          todos: state.todos.map((t) => (t.id === row.id ? updatedTodo : t)),
+          selectedTodo:
+            state.selectedTodo?.id === row.id
+              ? { ...state.selectedTodo, ...updatedTodo }
+              : state.selectedTodo,
+        }));
+        return true;
+      }
+
+      if (eventType === 'DELETE') {
+        const row = payload as { id?: string };
+        if (!row.id) return false;
+
+        useWorkspaceStore.setState((state) => ({
+          todos: state.todos.filter((t) => t.id !== row.id),
+          selectedTodo: state.selectedTodo?.id === row.id ? null : state.selectedTodo,
+          isTodoModalOpen: state.selectedTodo?.id === row.id ? false : state.isTodoModalOpen,
+        }));
+        return true;
+      }
+
+      return false;
+    };
+
+    /**
+     * Patch todo_assignees changes directly in the matching todo in the store.
+     */
+    const applyTodoAssigneePatch = (
+      eventType: 'INSERT' | 'UPDATE' | 'DELETE',
+      payload: Record<string, unknown>
+    ): boolean => {
+      const row = payload as {
+        id?: string;
+        todo_id?: string;
+        user_id?: string;
+        assigned_at?: string | null;
+      };
+      if (!row.todo_id) return false;
+
+      const store = useWorkspaceStore.getState();
+      const todo = store.todos.find((t) => t.id === row.todo_id);
+      if (!todo) return false;
+
+      if (eventType === 'INSERT') {
+        if (!row.id || !row.user_id) return false;
+        // Dedupe
+        if ((todo.assignees ?? []).some((a) => a.id === row.id)) return true;
+
+        const usersById = new Map(store.users.map((u) => [u.id, u]));
+        const newAssignee: TodoAssignee = {
+          id: row.id,
+          todo_id: row.todo_id!,
+          user_id: row.user_id,
+          assigned_at: row.assigned_at ?? new Date().toISOString(),
+          user: usersById.get(row.user_id),
+        };
+        const updatedAssignees = [...(todo.assignees ?? []), newAssignee];
+
+        useWorkspaceStore.setState((state) => ({
+          todos: state.todos.map((t) =>
+            t.id === row.todo_id ? { ...t, assignees: updatedAssignees } : t
+          ),
+          selectedTodo:
+            state.selectedTodo?.id === row.todo_id
+              ? { ...state.selectedTodo, assignees: updatedAssignees }
+              : state.selectedTodo,
+        }));
+        return true;
+      }
+
+      if (eventType === 'DELETE') {
+        if (!row.id) return false;
+        const updatedAssignees = (todo.assignees ?? []).filter((a) => a.id !== row.id);
+
+        useWorkspaceStore.setState((state) => ({
+          todos: state.todos.map((t) =>
+            t.id === row.todo_id ? { ...t, assignees: updatedAssignees } : t
+          ),
+          selectedTodo:
+            state.selectedTodo?.id === row.todo_id
+              ? { ...state.selectedTodo, assignees: updatedAssignees }
+              : state.selectedTodo,
+        }));
+        return true;
+      }
+
+      return false;
+    };
+
+    /**
+     * Patch todo_labels changes directly in the matching todo in the store.
+     */
+    const applyTodoLabelPatch = (
+      eventType: 'INSERT' | 'UPDATE' | 'DELETE',
+      payload: Record<string, unknown>
+    ): boolean => {
+      const row = payload as {
+        id?: string;
+        todo_id?: string;
+        label_id?: string;
+      };
+      if (!row.todo_id) return false;
+
+      const store = useWorkspaceStore.getState();
+      const todo = store.todos.find((t) => t.id === row.todo_id);
+      if (!todo) return false;
+
+      if (eventType === 'INSERT') {
+        if (!row.id || !row.label_id) return false;
+        // Dedupe
+        if ((todo.labels ?? []).some((l) => l.id === row.id)) return true;
+
+        const labelsById = new Map(store.labels.map((l) => [l.id, l]));
+        const newLabel: TodoLabel = {
+          id: row.id,
+          todo_id: row.todo_id!,
+          label_id: row.label_id,
+          label: labelsById.get(row.label_id),
+        };
+        const updatedLabels = [...(todo.labels ?? []), newLabel];
+
+        useWorkspaceStore.setState((state) => ({
+          todos: state.todos.map((t) =>
+            t.id === row.todo_id ? { ...t, labels: updatedLabels } : t
+          ),
+          selectedTodo:
+            state.selectedTodo?.id === row.todo_id
+              ? { ...state.selectedTodo, labels: updatedLabels }
+              : state.selectedTodo,
+        }));
+        return true;
+      }
+
+      if (eventType === 'DELETE') {
+        if (!row.id) return false;
+        const updatedLabels = (todo.labels ?? []).filter((l) => l.id !== row.id);
+
+        useWorkspaceStore.setState((state) => ({
+          todos: state.todos.map((t) =>
+            t.id === row.todo_id ? { ...t, labels: updatedLabels } : t
+          ),
+          selectedTodo:
+            state.selectedTodo?.id === row.todo_id
+              ? { ...state.selectedTodo, labels: updatedLabels }
+              : state.selectedTodo,
+        }));
+        return true;
+      }
+
+      return false;
+    };
+
+    /**
+     * Patch checklist_items changes directly in the matching todo in the store.
+     */
+    const applyChecklistPatch = (
+      eventType: 'INSERT' | 'UPDATE' | 'DELETE',
+      payload: Record<string, unknown>
+    ): boolean => {
+      const row = payload as {
+        id?: string;
+        todo_id?: string;
+        content?: string | null;
+        is_completed?: boolean | null;
+        position?: number | null;
+        completed_at?: string | null;
+        completed_by?: string | null;
+      };
+      if (!row.todo_id) return false;
+
+      const store = useWorkspaceStore.getState();
+      const todo = store.todos.find((t) => t.id === row.todo_id);
+      if (!todo) return false;
+
+      if (eventType === 'INSERT') {
+        if (!row.id) return false;
+        if ((todo.checklist_items ?? []).some((c) => c.id === row.id)) return true;
+
+        const newItem: ChecklistItem = {
+          id: row.id,
+          todo_id: row.todo_id!,
+          content: row.content ?? '',
+          is_completed: row.is_completed ?? false,
+          position: row.position ?? 0,
+          completed_at: row.completed_at ?? null,
+          completed_by: row.completed_by ?? null,
+        };
+        const updatedItems = [...(todo.checklist_items ?? []), newItem].sort((a, b) => a.position - b.position);
+
+        useWorkspaceStore.setState((state) => ({
+          todos: state.todos.map((t) =>
+            t.id === row.todo_id ? { ...t, checklist_items: updatedItems } : t
+          ),
+          selectedTodo:
+            state.selectedTodo?.id === row.todo_id
+              ? { ...state.selectedTodo, checklist_items: updatedItems }
+              : state.selectedTodo,
+        }));
+        return true;
+      }
+
+      if (eventType === 'UPDATE') {
+        if (!row.id) return false;
+        const updatedItems = (todo.checklist_items ?? []).map((c) =>
+          c.id === row.id
+            ? {
+                ...c,
+                ...(row.content !== undefined && { content: row.content ?? '' }),
+                ...(row.is_completed !== undefined && { is_completed: row.is_completed ?? false }),
+                ...(row.position !== undefined && { position: row.position ?? c.position }),
+                ...(row.completed_at !== undefined && { completed_at: row.completed_at ?? null }),
+                ...(row.completed_by !== undefined && { completed_by: row.completed_by ?? null }),
+              }
+            : c
+        );
+
+        useWorkspaceStore.setState((state) => ({
+          todos: state.todos.map((t) =>
+            t.id === row.todo_id ? { ...t, checklist_items: updatedItems } : t
+          ),
+          selectedTodo:
+            state.selectedTodo?.id === row.todo_id
+              ? { ...state.selectedTodo, checklist_items: updatedItems }
+              : state.selectedTodo,
+        }));
+        return true;
+      }
+
+      if (eventType === 'DELETE') {
+        if (!row.id) return false;
+        const updatedItems = (todo.checklist_items ?? []).filter((c) => c.id !== row.id);
+
+        useWorkspaceStore.setState((state) => ({
+          todos: state.todos.map((t) =>
+            t.id === row.todo_id ? { ...t, checklist_items: updatedItems } : t
+          ),
+          selectedTodo:
+            state.selectedTodo?.id === row.todo_id
+              ? { ...state.selectedTodo, checklist_items: updatedItems }
+              : state.selectedTodo,
+        }));
+        return true;
+      }
+
+      return false;
+    };
+
+    /**
+     * Patch attachments changes directly in the matching todo in the store.
+     */
+    const applyAttachmentPatch = (
+      eventType: 'INSERT' | 'UPDATE' | 'DELETE',
+      payload: Record<string, unknown>
+    ): boolean => {
+      const row = payload as {
+        id?: string;
+        todo_id?: string;
+        file_name?: string;
+        file_type?: string | null;
+        file_size?: number | null;
+        file_url?: string;
+        thumbnail_url?: string | null;
+        uploaded_by?: string | null;
+        created_at?: string;
+        expires_at?: string | null;
+      };
+      if (!row.todo_id) return false;
+
+      const store = useWorkspaceStore.getState();
+      const todo = store.todos.find((t) => t.id === row.todo_id);
+      if (!todo) return false;
+
+      if (eventType === 'INSERT') {
+        if (!row.id || !row.file_url || !row.file_name) return false;
+        if ((todo.attachments ?? []).some((a) => a.id === row.id)) return true;
+
+        const newAttachment: Attachment = {
+          id: row.id,
+          todo_id: row.todo_id!,
+          file_name: row.file_name,
+          file_type: row.file_type ?? '',
+          file_size: row.file_size ?? 0,
+          file_url: row.file_url,
+          thumbnail_url: row.thumbnail_url ?? null,
+          uploaded_by: row.uploaded_by ?? '',
+          created_at: row.created_at ?? new Date().toISOString(),
+          expires_at: row.expires_at ?? null,
+        };
+        const updatedAttachments = [...(todo.attachments ?? []), newAttachment];
+
+        useWorkspaceStore.setState((state) => ({
+          todos: state.todos.map((t) =>
+            t.id === row.todo_id ? { ...t, attachments: updatedAttachments } : t
+          ),
+          selectedTodo:
+            state.selectedTodo?.id === row.todo_id
+              ? { ...state.selectedTodo, attachments: updatedAttachments }
+              : state.selectedTodo,
+        }));
+        return true;
+      }
+
+      if (eventType === 'DELETE') {
+        if (!row.id) return false;
+        const updatedAttachments = (todo.attachments ?? []).filter((a) => a.id !== row.id);
+
+        useWorkspaceStore.setState((state) => ({
+          todos: state.todos.map((t) =>
+            t.id === row.todo_id ? { ...t, attachments: updatedAttachments } : t
+          ),
+          selectedTodo:
+            state.selectedTodo?.id === row.todo_id
+              ? { ...state.selectedTodo, attachments: updatedAttachments }
+              : state.selectedTodo,
+        }));
+        return true;
+      }
+
+      return false;
+    };
+
+    /**
+     * Patch users table UPDATE events: update user in store.users and in all
+     * todo.assignees[].user references.
+     */
+    const applyUserPatch = (
+      eventType: 'INSERT' | 'UPDATE' | 'DELETE',
+      payload: Record<string, unknown>
+    ): boolean => {
+      if (eventType !== 'UPDATE') return false;
+
+      const row = payload as {
+        id?: string;
+        name?: string | null;
+        username?: string | null;
+        color?: string | null;
+        avatar_url?: string | null;
+        status?: string | null;
+        offline_reason?: string | null;
+        last_seen?: string | null;
+        created_at?: string | null;
+      };
+      if (!row.id) return false;
+
+      const store = useWorkspaceStore.getState();
+      const existingUser = store.users.find((u) => u.id === row.id);
+      if (!existingUser) return false;
+
+      const normalizeStatus = (s: unknown): 'online' | 'away' | 'offline' => {
+        if (s === 'online' || s === 'away' || s === 'offline') return s;
+        return 'online';
+      };
+
+      const updatedUser = {
+        ...existingUser,
+        ...(row.name !== undefined && { display_name: row.name?.trim() || existingUser.display_name }),
+        ...(row.color !== undefined && { avatar_color: row.color || existingUser.avatar_color }),
+        ...(row.avatar_url !== undefined && { avatar_url: typeof row.avatar_url === 'string' ? row.avatar_url : null }),
+        ...(row.status !== undefined && { status: normalizeStatus(row.status) }),
+        ...(row.offline_reason !== undefined && { offline_reason: typeof row.offline_reason === 'string' ? row.offline_reason : null }),
+        ...(row.last_seen !== undefined && { last_seen: row.last_seen ?? existingUser.last_seen }),
+      };
+
+      useWorkspaceStore.setState((state) => ({
+        users: state.users.map((u) => (u.id === row.id ? updatedUser : u)),
+        // Also patch user refs inside todo assignees
+        todos: state.todos.map((t) => ({
+          ...t,
+          assignees: (t.assignees ?? []).map((a) =>
+            a.user_id === row.id ? { ...a, user: updatedUser } : a
+          ),
+        })),
+        // Update currentUser if it's the same person
+        currentUser: state.currentUser?.id === row.id
+          ? { ...state.currentUser, ...updatedUser }
+          : state.currentUser,
+        // Patch selectedTodo assignees too
+        selectedTodo: state.selectedTodo
+          ? {
+              ...state.selectedTodo,
+              assignees: (state.selectedTodo.assignees ?? []).map((a) =>
+                a.user_id === row.id ? { ...a, user: updatedUser } : a
+              ),
+            }
+          : null,
+      }));
+      return true;
+    };
+
+    // ── Channel subscription ─────────────────────────────────────────────────
+
+    const channel = supabase
+      .channel(`workspace-core-sync:${currentUserId}`)
+      // todos — surgical patch with fallback
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'todos' }, (payload) => {
+        const data = (payload.eventType === 'DELETE' ? payload.old : payload.new) as Record<string, unknown>;
+        const applied = applyTodoPatch(payload.eventType as 'INSERT' | 'UPDATE' | 'DELETE', data);
+        if (!applied) {
           scheduleWorkspaceRefresh();
-          if (
-            (payload.eventType === 'INSERT' || payload.eventType === 'DELETE') &&
-            followUpTables.has(table)
-          ) {
-            scheduleFollowUpWorkspaceRefresh();
-          }
         }
-      );
-    }, channelBase);
-
-    // Register comments table with fast local patch
-    const channel = channelBase.on(
-      'postgres_changes',
-      { event: '*', schema: 'public', table: 'comments' },
-      (payload) => {
+      })
+      // todo_assignees — surgical patch with fallback
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'todo_assignees' }, (payload) => {
+        const data = (payload.eventType === 'DELETE' ? payload.old : payload.new) as Record<string, unknown>;
+        const applied = applyTodoAssigneePatch(payload.eventType as 'INSERT' | 'UPDATE' | 'DELETE', data);
+        if (!applied) {
+          scheduleWorkspaceRefresh();
+        }
+      })
+      // todo_labels — surgical patch with fallback
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'todo_labels' }, (payload) => {
+        const data = (payload.eventType === 'DELETE' ? payload.old : payload.new) as Record<string, unknown>;
+        const applied = applyTodoLabelPatch(payload.eventType as 'INSERT' | 'UPDATE' | 'DELETE', data);
+        if (!applied) {
+          scheduleWorkspaceRefresh();
+        }
+      })
+      // checklist_items — surgical patch with fallback
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'checklist_items' }, (payload) => {
+        const data = (payload.eventType === 'DELETE' ? payload.old : payload.new) as Record<string, unknown>;
+        const applied = applyChecklistPatch(payload.eventType as 'INSERT' | 'UPDATE' | 'DELETE', data);
+        if (!applied) {
+          scheduleWorkspaceRefresh();
+        }
+      })
+      // attachments — surgical patch with fallback
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'attachments' }, (payload) => {
+        const data = (payload.eventType === 'DELETE' ? payload.old : payload.new) as Record<string, unknown>;
+        const applied = applyAttachmentPatch(payload.eventType as 'INSERT' | 'UPDATE' | 'DELETE', data);
+        if (!applied) {
+          scheduleWorkspaceRefresh();
+        }
+      })
+      // users — surgical patch for UPDATE, fallback for INSERT/DELETE
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, (payload) => {
+        const data = (payload.eventType === 'DELETE' ? payload.old : payload.new) as Record<string, unknown>;
+        const applied = applyUserPatch(payload.eventType as 'INSERT' | 'UPDATE' | 'DELETE', data);
+        if (!applied) {
+          scheduleWorkspaceRefresh();
+        }
+      })
+      // labels — full reload (affects UI globally)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'labels' }, () => {
+        scheduleWorkspaceRefresh();
+      })
+      // categories — full reload
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'categories' }, () => {
+        scheduleWorkspaceRefresh();
+      })
+      // comments — fast local patch (existing logic)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'comments' }, (payload) => {
         const applied = applyCommentPatch(
           payload.eventType as 'INSERT' | 'UPDATE' | 'DELETE',
           (payload.eventType === 'DELETE' ? payload.old : payload.new) as Record<string, unknown>
         );
-        // Fall back to full reload if patch couldn't be applied (todo not in store yet)
         if (!applied) {
           scheduleWorkspaceRefresh();
         }
-      }
-    );
+      })
+      // activity_logs — skip; the todo-detail-modal reloads these independently
+      ;
 
     channel.subscribe((status) => {
       if (status === 'SUBSCRIBED') {

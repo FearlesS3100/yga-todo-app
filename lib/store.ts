@@ -2159,19 +2159,38 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     const now = new Date().toISOString();
     const previousTodos = get().todos;
 
+    // Build the new todos list with the moved todo inserted at targetIndex,
+    // then reindex all todos in the target category to avoid position collisions.
     set((state) => {
-      const updatedTodos = state.todos.map((todo) => {
-        if (todo.id !== todoId) {
-          return todo;
-        }
-
-        return {
-          ...todo,
-          category_id: targetCategoryId,
-          position: targetIndex,
-          updated_at: now,
-        };
+      // First pass: update the moved todo's category and provisional position
+      const withMovedTodo = state.todos.map((todo) => {
+        if (todo.id !== todoId) return todo;
+        return { ...todo, category_id: targetCategoryId, position: targetIndex, updated_at: now };
       });
+
+      // Reindex todos in the target category by their sorted position so that
+      // the moved todo lands exactly at targetIndex and no two items share a position.
+      const targetCategoryTodos = withMovedTodo
+        .filter((t) => t.category_id === targetCategoryId)
+        .sort((a, b) => {
+          // The moved todo already has position = targetIndex; sort stably
+          if (a.id === todoId) return a.position - b.position;
+          if (b.id === todoId) return a.position - b.position;
+          return a.position - b.position;
+        });
+
+      // Separate moved todo out and splice it in at targetIndex
+      const otherTargetTodos = targetCategoryTodos.filter((t) => t.id !== todoId);
+      const movedTodo = targetCategoryTodos.find((t) => t.id === todoId)!;
+      const reorderedTarget = [...otherTargetTodos];
+      reorderedTarget.splice(targetIndex, 0, movedTodo);
+
+      const reindexed = reorderedTarget.map((todo, idx) => ({ ...todo, position: idx }));
+      const reindexMap = new Map(reindexed.map((t) => [t.id, t.position]));
+
+      const updatedTodos = withMovedTodo.map((todo) =>
+        reindexMap.has(todo.id) ? { ...todo, position: reindexMap.get(todo.id)! } : todo
+      );
 
       return { todos: updatedTodos };
     });
@@ -2194,6 +2213,33 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       if (error || !data || data.length === 0) {
         console.warn('Failed to move todo in Supabase, rolling back local state:', error);
         set({ todos: previousTodos });
+        return;
+      }
+
+      // After the move succeeds, call reorder_todos RPC for the target category
+      // to persist the collision-free positions for all todos in that category.
+      const currentTodos = get().todos;
+      const targetCategoryOrdered = currentTodos
+        .filter((t) => t.category_id === targetCategoryId)
+        .sort((a, b) => a.position - b.position);
+      const todoIds = targetCategoryOrdered.map((t) => t.id);
+
+      const { error: rpcError } = await supabase.rpc('reorder_todos', {
+        p_category_id: targetCategoryId,
+        p_todo_ids: todoIds,
+      });
+
+      if (rpcError) {
+        // RPC not available — fall back to individual position updates
+        await Promise.all(
+          targetCategoryOrdered.map((todo) =>
+            supabase
+              .from('todos')
+              .update({ position: todo.position })
+              .eq('id', todo.id)
+              .select('id')
+          )
+        );
       }
     })();
   },
