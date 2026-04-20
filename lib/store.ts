@@ -2145,7 +2145,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         .eq('id', id)
         .select('id');
 
-      if (!deleteError) {
+      const deletedRowCount = deleteData?.length ?? 0;
+
+      if (!deleteError && deletedRowCount > 0) {
         get().prependNotification(
           createLocalStatusNotification(
             currentUserId,
@@ -2156,7 +2158,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         return;
       }
 
-      console.warn('Failed to delete todo in Supabase, rolling back local state:', deleteError);
+      console.warn(
+        'Failed to delete todo in Supabase or no rows were deleted, rolling back local state:',
+        deleteError ?? new Error('Delete affected zero rows')
+      );
       set(previousState);
       get().prependNotification(
         createLocalStatusNotification(
@@ -2247,7 +2252,12 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       // collision-free positions for all affected todos.
       const currentTodos = get().todos;
 
-      const reorderCategory = async (categoryId: string) => {
+      const reconcileReorderFailure = () => {
+        set({ todos: previousTodos });
+        void get().loadWorkspaceData();
+      };
+
+      const reorderCategory = async (categoryId: string): Promise<boolean> => {
         const ordered = currentTodos
           .filter((t) => t.category_id === categoryId)
           .sort((a, b) => a.position - b.position);
@@ -2260,7 +2270,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
         if (rpcError) {
           // RPC not available — fall back to individual position updates
-          await Promise.all(
+          const updateResults = await Promise.all(
             ordered.map((todo) =>
               supabase
                 .from('todos')
@@ -2269,15 +2279,33 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
                 .select('id')
             )
           );
+
+          const failedUpdate = updateResults.find(
+            ({ data, error }) => error || !data || data.length === 0
+          );
+
+          if (failedUpdate) {
+            console.warn('Failed to persist todo reorder fallback updates:', failedUpdate.error);
+            return false;
+          }
         }
+
+        return true;
       };
 
       // Reorder target category
-      await reorderCategory(targetCategoryId);
+      const targetReorderSucceeded = await reorderCategory(targetCategoryId);
+      if (!targetReorderSucceeded) {
+        reconcileReorderFailure();
+        return;
+      }
 
       // Reorder source category if different from target
       if (sourceCategoryId && sourceCategoryId !== targetCategoryId) {
-        await reorderCategory(sourceCategoryId);
+        const sourceReorderSucceeded = await reorderCategory(sourceCategoryId);
+        if (!sourceReorderSucceeded) {
+          reconcileReorderFailure();
+        }
       }
     })();
   },

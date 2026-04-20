@@ -79,6 +79,7 @@ DROP FUNCTION IF EXISTS get_dashboard_stats(UUID,UUID) CASCADE;
 -- 1. EXTENSION
 -- ============================================================
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- ============================================================
 -- 2. TABLOLAR
@@ -400,9 +401,9 @@ CREATE TRIGGER add_workspace_owner_trigger
 CREATE OR REPLACE FUNCTION auto_assign_category_position()
 RETURNS TRIGGER AS $func$
 BEGIN
-    IF NEW.position IS NULL OR NEW.position = 0 THEN
+    IF NEW.position IS NULL THEN
         NEW.position := (
-            SELECT COALESCE(MAX(position), 0) + 1
+            SELECT COALESCE(MAX(position), -1) + 1
             FROM categories WHERE workspace_id = NEW.workspace_id
         );
     END IF;
@@ -417,9 +418,9 @@ CREATE TRIGGER auto_assign_category_position_trigger
 CREATE OR REPLACE FUNCTION auto_assign_todo_position()
 RETURNS TRIGGER AS $func$
 BEGIN
-    IF NEW.position IS NULL OR NEW.position = 0 THEN
+    IF NEW.position IS NULL THEN
         NEW.position := (
-            SELECT COALESCE(MAX(position), 0) + 1
+            SELECT COALESCE(MAX(position), -1) + 1
             FROM todos WHERE category_id = NEW.category_id
         );
     END IF;
@@ -434,9 +435,9 @@ CREATE TRIGGER auto_assign_todo_position_trigger
 CREATE OR REPLACE FUNCTION auto_assign_checklist_position()
 RETURNS TRIGGER AS $func$
 BEGIN
-    IF NEW.position IS NULL OR NEW.position = 0 THEN
+    IF NEW.position IS NULL THEN
         NEW.position := (
-            SELECT COALESCE(MAX(position), 0) + 1
+            SELECT COALESCE(MAX(position), -1) + 1
             FROM checklist_items WHERE todo_id = NEW.todo_id
         );
     END IF;
@@ -536,7 +537,7 @@ RETURNS BOOLEAN AS $func$
 DECLARE v_max_position INTEGER;
 BEGIN
     IF p_new_position IS NULL THEN
-        SELECT COALESCE(MAX(position), 0) + 1 INTO v_max_position FROM todos WHERE category_id = p_new_category_id;
+        SELECT COALESCE(MAX(position), -1) + 1 INTO v_max_position FROM todos WHERE category_id = p_new_category_id;
         p_new_position := v_max_position;
     END IF;
     UPDATE todos SET category_id = p_new_category_id, position = p_new_position WHERE id = p_todo_id;
@@ -652,7 +653,7 @@ $func$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION reorder_categories(p_workspace_id UUID, p_category_ids UUID[])
 RETURNS BOOLEAN AS $func$
-DECLARE v_position INTEGER := 1; v_category_id UUID;
+DECLARE v_position INTEGER := 0; v_category_id UUID;
 BEGIN
     FOREACH v_category_id IN ARRAY p_category_ids LOOP
         UPDATE categories SET position = v_position WHERE id = v_category_id AND workspace_id = p_workspace_id;
@@ -664,7 +665,7 @@ $func$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION reorder_todos(p_category_id UUID, p_todo_ids UUID[])
 RETURNS BOOLEAN AS $func$
-DECLARE v_position INTEGER := 1; v_todo_id UUID;
+DECLARE v_position INTEGER := 0; v_todo_id UUID;
 BEGIN
     FOREACH v_todo_id IN ARRAY p_todo_ids LOOP
         UPDATE todos SET position = v_position WHERE id = v_todo_id AND category_id = p_category_id;
@@ -799,17 +800,76 @@ ON CONFLICT (id) DO NOTHING;
 -- 7. REALTIME
 -- ============================================================
 DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_publication
+    WHERE pubname = 'supabase_realtime'
+  ) THEN
+    CREATE PUBLICATION supabase_realtime;
+  END IF;
+END $$;
+
+DO $$
 DECLARE t TEXT;
 BEGIN
-  FOREACH t IN ARRAY ARRAY['users','workspaces','workspace_members','categories','todos','todo_assignees','checklist_items','todo_labels','attachments','comments','notifications','activity_logs']
+  FOREACH t IN ARRAY ARRAY[
+    'users',
+    'workspaces',
+    'workspace_members',
+    'categories',
+    'labels',
+    'todos',
+    'todo_assignees',
+    'todo_labels',
+    'checklist_items',
+    'comments',
+    'attachments',
+    'notifications',
+    'activity_logs'
+  ]
   LOOP
-    IF NOT EXISTS (
+    IF to_regclass(format('public.%I', t)) IS NOT NULL
+      AND NOT EXISTS (
       SELECT 1 FROM pg_publication_tables
       WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = t
     ) THEN
       EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE public.%I', t);
     END IF;
   END LOOP;
+END $$;
+
+DO $$
+DECLARE
+  required_tables TEXT[] := ARRAY[
+    'users',
+    'categories',
+    'labels',
+    'todos',
+    'todo_assignees',
+    'todo_labels',
+    'checklist_items',
+    'comments',
+    'attachments',
+    'notifications',
+    'activity_logs'
+  ];
+  missing_tables TEXT[];
+BEGIN
+  SELECT array_agg(req.tablename ORDER BY req.tablename)
+  INTO missing_tables
+  FROM unnest(required_tables) AS req(tablename)
+  WHERE NOT EXISTS (
+    SELECT 1
+    FROM pg_publication_tables ppt
+    WHERE ppt.pubname = 'supabase_realtime'
+      AND ppt.schemaname = 'public'
+      AND ppt.tablename = req.tablename
+  );
+
+  IF missing_tables IS NOT NULL THEN
+    RAISE EXCEPTION 'supabase_realtime publication is missing required tables: %', array_to_string(missing_tables, ', ');
+  END IF;
 END $$;
 
 -- ============================================================
@@ -1132,6 +1192,15 @@ END $$;
 DO $$
 BEGIN
   IF NOT EXISTS (
+    SELECT 1
+    FROM pg_publication
+    WHERE pubname = 'supabase_realtime'
+  ) THEN
+    CREATE PUBLICATION supabase_realtime;
+  END IF;
+
+  IF to_regclass('public.comment_reactions') IS NOT NULL
+    AND NOT EXISTS (
     SELECT 1 FROM pg_publication_tables
     WHERE pubname = 'supabase_realtime'
       AND schemaname = 'public'
@@ -1148,6 +1217,7 @@ ALTER TABLE IF EXISTS public.todos REPLICA IDENTITY FULL;
 ALTER TABLE IF EXISTS public.todo_assignees REPLICA IDENTITY FULL;
 ALTER TABLE IF EXISTS public.checklist_items REPLICA IDENTITY FULL;
 ALTER TABLE IF EXISTS public.todo_labels REPLICA IDENTITY FULL;
+ALTER TABLE IF EXISTS public.labels REPLICA IDENTITY FULL;
 ALTER TABLE IF EXISTS public.attachments REPLICA IDENTITY FULL;
 ALTER TABLE IF EXISTS public.comments REPLICA IDENTITY FULL;
 ALTER TABLE IF EXISTS public.users REPLICA IDENTITY FULL;

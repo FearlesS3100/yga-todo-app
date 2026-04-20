@@ -123,6 +123,10 @@ function sortNotificationsByCreatedAtDesc(notifications: AppNotification[]): App
   return [...notifications].sort((a, b) => toEpoch(b.created_at) - toEpoch(a.created_at));
 }
 
+const CORE_RECONCILIATION_GUARD_INTERVAL_MS = 6000;
+const CORE_EVENT_STALE_THRESHOLD_MS = 20000;
+const CORE_SAFETY_REFRESH_INTERVAL_MS = 60000;
+
 export function Workspace() {
   const [activeTab, setActiveTab] = useState('board');
   const [view, setView] = useState<'kanban' | 'list' | 'calendar'>('kanban');
@@ -144,6 +148,12 @@ export function Workspace() {
   const workspaceFollowUpRefreshTimeoutRef = useRef<number | null>(null);
   const workspaceFastRefreshTimeoutRef = useRef<number | null>(null);
   const coreChannelHealthyRef = useRef<boolean>(true);
+  const coreChannelLastEventAtRef = useRef<number>(Date.now());
+  const coreChannelLastReconcileAtRef = useRef<number>(Date.now());
+
+  const markCoreChannelEventSeen = useCallback(() => {
+    coreChannelLastEventAtRef.current = Date.now();
+  }, []);
 
   const scheduleWorkspaceRefresh = useCallback(() => {
     if (workspaceRefreshTimeoutRef.current !== null) {
@@ -393,7 +403,10 @@ export function Workspace() {
       return;
     }
 
+    const now = Date.now();
     coreChannelHealthyRef.current = true;
+    coreChannelLastEventAtRef.current = now;
+    coreChannelLastReconcileAtRef.current = now;
 
     // Fast local patch for comment events — avoids full reload for comment changes
     const applyCommentPatch = (
@@ -1201,16 +1214,24 @@ export function Workspace() {
 
     const channel = supabase
       .channel('workspace-core-sync')
-      // todos — surgical patch with fast fallback (50ms) to handle position reindex quickly
+      // todos — surgical patch; for INSERT/DELETE failures do immediate reload (not debounced)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'todos' }, (payload) => {
+        markCoreChannelEventSeen();
         const data = (payload.eventType === 'DELETE' ? payload.old : payload.new) as Record<string, unknown>;
         const applied = applyTodoPatch(payload.eventType as 'INSERT' | 'UPDATE' | 'DELETE', data);
         if (!applied) {
-          scheduleFastRefresh();
+          // INSERT/DELETE must reflect immediately — debounced timer keeps getting pushed back
+          // when multiple events arrive quickly, causing missed updates. Call directly.
+          if (payload.eventType === 'INSERT' || payload.eventType === 'DELETE') {
+            void loadWorkspaceData();
+          } else {
+            scheduleFastRefresh();
+          }
         }
       })
       // todo_assignees — surgical patch with fast fallback (50ms)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'todo_assignees' }, (payload) => {
+        markCoreChannelEventSeen();
         const data = (payload.eventType === 'DELETE' ? payload.old : payload.new) as Record<string, unknown>;
         const applied = applyTodoAssigneePatch(payload.eventType as 'INSERT' | 'UPDATE' | 'DELETE', data);
         if (!applied) {
@@ -1219,6 +1240,7 @@ export function Workspace() {
       })
       // todo_labels — surgical patch with fallback
       .on('postgres_changes', { event: '*', schema: 'public', table: 'todo_labels' }, (payload) => {
+        markCoreChannelEventSeen();
         const data = (payload.eventType === 'DELETE' ? payload.old : payload.new) as Record<string, unknown>;
         const applied = applyTodoLabelPatch(payload.eventType as 'INSERT' | 'UPDATE' | 'DELETE', data);
         if (!applied) {
@@ -1227,6 +1249,7 @@ export function Workspace() {
       })
       // checklist_items — surgical patch with fallback
       .on('postgres_changes', { event: '*', schema: 'public', table: 'checklist_items' }, (payload) => {
+        markCoreChannelEventSeen();
         const data = (payload.eventType === 'DELETE' ? payload.old : payload.new) as Record<string, unknown>;
         const applied = applyChecklistPatch(payload.eventType as 'INSERT' | 'UPDATE' | 'DELETE', data);
         if (!applied) {
@@ -1235,6 +1258,7 @@ export function Workspace() {
       })
       // attachments — surgical patch with fallback
       .on('postgres_changes', { event: '*', schema: 'public', table: 'attachments' }, (payload) => {
+        markCoreChannelEventSeen();
         const data = (payload.eventType === 'DELETE' ? payload.old : payload.new) as Record<string, unknown>;
         const applied = applyAttachmentPatch(payload.eventType as 'INSERT' | 'UPDATE' | 'DELETE', data);
         if (!applied) {
@@ -1243,6 +1267,7 @@ export function Workspace() {
       })
       // users — surgical patch for UPDATE, fallback for INSERT/DELETE
       .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, (payload) => {
+        markCoreChannelEventSeen();
         const data = (payload.eventType === 'DELETE' ? payload.old : payload.new) as Record<string, unknown>;
         const applied = applyUserPatch(payload.eventType as 'INSERT' | 'UPDATE' | 'DELETE', data);
         if (!applied) {
@@ -1251,14 +1276,17 @@ export function Workspace() {
       })
       // labels — full reload (affects UI globally)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'labels' }, () => {
+        markCoreChannelEventSeen();
         scheduleWorkspaceRefresh();
       })
       // categories — full reload
       .on('postgres_changes', { event: '*', schema: 'public', table: 'categories' }, () => {
+        markCoreChannelEventSeen();
         scheduleWorkspaceRefresh();
       })
       // comments — fast local patch (existing logic)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'comments' }, (payload) => {
+        markCoreChannelEventSeen();
         const applied = applyCommentPatch(
           payload.eventType as 'INSERT' | 'UPDATE' | 'DELETE',
           (payload.eventType === 'DELETE' ? payload.old : payload.new) as Record<string, unknown>
@@ -1273,10 +1301,13 @@ export function Workspace() {
     channel.subscribe((status) => {
       if (status === 'SUBSCRIBED') {
         coreChannelHealthyRef.current = true;
+        coreChannelLastEventAtRef.current = Date.now();
         scheduleWorkspaceRefresh();
-      } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+      } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
         coreChannelHealthyRef.current = false;
         scheduleWorkspaceRefresh();
+      } else if (status === 'CLOSED') {
+        coreChannelHealthyRef.current = false;
       }
     });
 
@@ -1295,7 +1326,7 @@ export function Workspace() {
       }
       void supabase.removeChannel(channel);
     };
-  }, [currentUserId, scheduleFollowUpWorkspaceRefresh, scheduleFastRefresh, scheduleWorkspaceRefresh]);
+  }, [currentUserId, loadWorkspaceData, markCoreChannelEventSeen, scheduleFastRefresh, scheduleWorkspaceRefresh]);
 
   // Health-aware fallback polling: only poll when realtime channel has errors
   useEffect(() => {
@@ -1311,6 +1342,30 @@ export function Workspace() {
 
     return () => {
       window.clearInterval(fallbackInterval);
+    };
+  }, [currentUserId, scheduleWorkspaceRefresh]);
+
+  // Reconciliation guard: covers silent realtime event stalls and periodic drift.
+  useEffect(() => {
+    if (!currentUserId) {
+      return;
+    }
+
+    const guardInterval = window.setInterval(() => {
+      const now = Date.now();
+      const isChannelHealthy = coreChannelHealthyRef.current;
+      const isEventStreamStale = now - coreChannelLastEventAtRef.current >= CORE_EVENT_STALE_THRESHOLD_MS;
+      const isSafetyRefreshDue =
+        now - coreChannelLastReconcileAtRef.current >= CORE_SAFETY_REFRESH_INTERVAL_MS;
+
+      if (!isChannelHealthy || (isChannelHealthy && isEventStreamStale) || isSafetyRefreshDue) {
+        coreChannelLastReconcileAtRef.current = now;
+        scheduleWorkspaceRefresh();
+      }
+    }, CORE_RECONCILIATION_GUARD_INTERVAL_MS);
+
+    return () => {
+      window.clearInterval(guardInterval);
     };
   }, [currentUserId, scheduleWorkspaceRefresh]);
 
