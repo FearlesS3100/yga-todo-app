@@ -205,14 +205,24 @@ export function AnalyticsPanel() {
             </CardHeader>
             <CardContent>
               <div className="space-y-3">
-                {userStats.slice(0, 5).map((user, index) => (
+                {userStats.slice(0, 5).map((user, index) => {
+                  const avatarUrl = user.avatar_url?.trim();
+
+                  return (
                   <div key={user.id} className="flex items-center gap-3">
                     <span className="text-sm text-muted-foreground w-4">{index + 1}</span>
-                    <div 
-                      className="w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-medium"
-                      style={{ backgroundColor: user.avatar_color }}
-                    >
-                      {user.display_name.charAt(0).toUpperCase()}
+                    <div className="w-8 h-8 rounded-full overflow-hidden flex items-center justify-center" style={{ backgroundColor: user.avatar_color }}>
+                      {avatarUrl ? (
+                        <img
+                          src={avatarUrl}
+                          alt={user.display_name}
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <span className="text-white text-sm font-medium">
+                          {user.display_name.charAt(0).toUpperCase()}
+                        </span>
+                      )}
                     </div>
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium truncate">{user.display_name}</p>
@@ -226,7 +236,7 @@ export function AnalyticsPanel() {
                       <p className="text-xs text-muted-foreground">/{user.assigned}</p>
                     </div>
                   </div>
-                ))}
+                )})}
               </div>
             </CardContent>
           </Card>

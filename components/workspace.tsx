@@ -1516,6 +1516,7 @@ export function Workspace() {
           event: 'DELETE',
           schema: 'public',
           table: 'notifications',
+          filter: `user_id=eq.${currentUserId}`,
         },
         (payload) => {
           const oldPayload = payload.old as Record<string, unknown>;
@@ -1561,29 +1562,11 @@ export function Workspace() {
         const currentNotificationMap = new Map(
           currentNotifications.map((notification) => [notification.id, notification])
         );
-        const fetchedIds = new Set(fetchedNotifications.map((notification) => notification.id));
 
+        // Polling can briefly return an empty/incomplete snapshot; merge fetched rows without pruning local realtime entries.
         for (const notification of fetchedNotifications) {
           const existing = currentNotificationMap.get(notification.id);
           currentNotificationMap.set(notification.id, existing ? { ...existing, ...notification } : notification);
-        }
-
-        if (fetchedNotifications.length === 0) {
-          currentNotificationMap.clear();
-        } else {
-          const oldestFetchedTimestamp = toEpoch(
-            fetchedNotifications[fetchedNotifications.length - 1]?.created_at ?? null
-          );
-
-          for (const notification of currentNotifications) {
-            const notificationTimestamp = toEpoch(notification.created_at);
-            const shouldBeInWindow = notificationTimestamp >= oldestFetchedTimestamp;
-
-            if (shouldBeInWindow && !fetchedIds.has(notification.id)) {
-              currentNotificationMap.delete(notification.id);
-              shownNativeNotificationIdsRef.current.delete(notification.id);
-            }
-          }
         }
 
         const reconciled = sortNotificationsByCreatedAtDesc(Array.from(currentNotificationMap.values()));

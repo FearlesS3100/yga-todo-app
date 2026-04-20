@@ -1166,7 +1166,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         attachmentRows = (!attachmentsRes.error ? (attachmentsRes.data ?? []) : []) as AttachmentRow[];
       }
 
-      let notifications: Notification[] = [];
+      let notifications: Notification[] | null = null;
+      let didFetchNotifications = false;
       if (effectiveCurrentUserId) {
         const notificationsRes = await supabase
           .from('notifications')
@@ -1174,11 +1175,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
           .eq('user_id', effectiveCurrentUserId)
           .order('created_at', { ascending: false });
 
-        if (!notificationsRes.error) {
+        if (!notificationsRes.error && Array.isArray(notificationsRes.data)) {
           const notificationReadCache = loadNotificationReadCache();
           const idsNeedingSync: string[] = [];
 
-          notifications = ((notificationsRes.data ?? []) as NotificationRow[]).map((row) => {
+          notifications = (notificationsRes.data as NotificationRow[]).map((row) => {
             const mapped = mapNotificationRow(row);
             const isDbRead = row.is_read ?? false;
 
@@ -1212,6 +1213,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
               removeNotificationReadCacheIds(data.map((row) => row.id));
             }
           }
+
+          didFetchNotifications = true;
         }
       }
 
@@ -1320,7 +1323,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         categories: categoriesWithTodos,
         labels,
         todos,
-        notifications,
+        // Preserve in-memory notifications when DB fetch fails or returns no valid payload.
+        notifications: didFetchNotifications && notifications ? notifications : state.notifications,
         selectedTodo: state.selectedTodo
           ? (() => {
               const fresh = todos.find((todo) => todo.id === state.selectedTodo!.id);
@@ -1727,7 +1731,77 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         }));
 
         const newTodo = mapTodoRow(insertedTodo as TodoRow, mappedAssignees, mappedLabels, mappedChecklist);
-        set((prev) => ({ todos: [...prev.todos, newTodo] }));
+
+        const mergeRelationByKey = <T,>(
+          existingItems: T[] | undefined,
+          incomingItems: T[] | undefined,
+          getKey: (item: T, index: number) => string
+        ): T[] => {
+          const merged = new Map<string, T>();
+
+          for (const [index, item] of (existingItems || []).entries()) {
+            merged.set(getKey(item, index), item);
+          }
+
+          for (const [index, item] of (incomingItems || []).entries()) {
+            const key = getKey(item, index);
+            const previous = merged.get(key);
+            merged.set(key, previous ? ({ ...previous, ...item } as T) : item);
+          }
+
+          return [...merged.values()];
+        };
+
+        // Realtime INSERT can add the same todo before this mutation resolves.
+        // Upsert by id to dedupe and merge relations so richer existing arrays are preserved.
+        set((prev) => {
+          const existingIndex = prev.todos.findIndex((todo) => todo.id === newTodo.id);
+          if (existingIndex === -1) {
+            return { todos: [...prev.todos, newTodo] };
+          }
+
+          const existingTodo = prev.todos[existingIndex];
+          const mergedTodo: Todo = {
+            ...existingTodo,
+            ...newTodo,
+            assignees: mergeRelationByKey(
+              existingTodo.assignees,
+              newTodo.assignees,
+              (assignee, index) => assignee.user_id || assignee.id || `assignee-${index}`
+            ),
+            labels: mergeRelationByKey(
+              existingTodo.labels,
+              newTodo.labels,
+              (label, index) => label.label_id || label.id || `label-${index}`
+            ),
+            checklist_items: mergeRelationByKey(
+              existingTodo.checklist_items,
+              newTodo.checklist_items,
+              (item, index) => item.id || `check-${item.position}-${index}`
+            ),
+            subtasks: mergeRelationByKey(existingTodo.subtasks, newTodo.subtasks, (todo) => todo.id),
+            comments: mergeRelationByKey(existingTodo.comments, newTodo.comments, (comment) => comment.id),
+            attachments: mergeRelationByKey(
+              existingTodo.attachments,
+              newTodo.attachments,
+              (attachment) => attachment.id
+            ),
+            dependencies: mergeRelationByKey(
+              existingTodo.dependencies,
+              newTodo.dependencies,
+              (dependency) => dependency.id
+            ),
+            time_entries: mergeRelationByKey(
+              existingTodo.time_entries,
+              newTodo.time_entries,
+              (timeEntry) => timeEntry.id
+            ),
+          };
+
+          const todos = [...prev.todos];
+          todos[existingIndex] = mergedTodo;
+          return { todos };
+        });
         return;
       } catch (error) {
         console.warn('Failed to persist todo in Supabase, using local state only:', error);

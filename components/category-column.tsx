@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import type { Category, Todo } from '@/lib/types';
 import { useWorkspaceStore } from '@/lib/store';
 import { cn } from '@/lib/utils';
@@ -68,6 +68,12 @@ export function CategoryColumn({
   const [dragOverTodoId, setDragOverTodoId] = useState<string | null>(null);
   const [localDraggedTodoId, setLocalDraggedTodoId] = useState<string | null>(null);
 
+  const resetDragVisualState = useCallback(() => {
+    setLocalDraggedTodoId(null);
+    setDragOverTodoId(null);
+    setIsDragOver(false);
+  }, []);
+
   const activeTodos = useMemo(
     () =>
       todos
@@ -83,6 +89,26 @@ export function CategoryColumn({
         .sort((a, b) => (b.completed_at || '').localeCompare(a.completed_at || '')),
     [todos]
   );
+
+  useEffect(() => {
+    const handleGlobalDragFinish = () => {
+      resetDragVisualState();
+    };
+
+    window.addEventListener('dragend', handleGlobalDragFinish);
+    window.addEventListener('drop', handleGlobalDragFinish);
+
+    return () => {
+      window.removeEventListener('dragend', handleGlobalDragFinish);
+      window.removeEventListener('drop', handleGlobalDragFinish);
+    };
+  }, [resetDragVisualState]);
+
+  useEffect(() => {
+    if (localDraggedTodoId && !todos.some(todo => todo.id === localDraggedTodoId)) {
+      setLocalDraggedTodoId(null);
+    }
+  }, [todos, localDraggedTodoId]);
 
   const handleSaveEdit = () => {
     if (editName.trim()) {
@@ -115,7 +141,6 @@ export function CategoryColumn({
   };
 
   const handleDrop = (e: React.DragEvent) => {
-    setIsDragOver(false);
     const todoId = e.dataTransfer.getData('text/plain');
 
     if (todoId && todos.some(t => t.id === todoId)) {
@@ -133,8 +158,7 @@ export function CategoryColumn({
       onDrop(e, category.id);
     }
 
-    setDragOverTodoId(null);
-    setLocalDraggedTodoId(null);
+    resetDragVisualState();
   };
 
   const wipExceeded = Boolean(category.wip_limit && todos.length >= category.wip_limit);
@@ -150,7 +174,10 @@ export function CategoryColumn({
       onDragOver={(e) => { handleDragOver(e); onColumnDragOver(e, category.id); }}
       onDragLeave={handleDragLeave}
       onDrop={(e) => { handleDrop(e); onColumnDrop(e, category.id); }}
-      onDragEnd={onColumnDragEnd}
+      onDragEnd={() => {
+        resetDragVisualState();
+        onColumnDragEnd();
+      }}
     >
       {/* Header */}
       <div className="p-3 flex items-center gap-2">
@@ -292,7 +319,7 @@ export function CategoryColumn({
                   setLocalDraggedTodoId(todo.id);
                   onDragStart(e, todo.id);
                 }}
-                onDragEnd={() => setLocalDraggedTodoId(null)}
+                 onDragEnd={resetDragVisualState}
                 onDragOver={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
@@ -338,7 +365,7 @@ export function CategoryColumn({
                       setLocalDraggedTodoId(todo.id);
                       onDragStart(e, todo.id);
                     }}
-                    onDragEnd={() => setLocalDraggedTodoId(null)}
+                     onDragEnd={resetDragVisualState}
                     className={cn(
                       "transition-all duration-150",
                       localDraggedTodoId === todo.id && "opacity-30 scale-[0.98]"

@@ -3,6 +3,13 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import type { ActivityLog, User as AppUser } from '@/lib/types';
+import { Button } from '@/components/ui/button';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
+import { Calendar as CalendarPicker } from '@/components/ui/calendar';
 import {
   Plus,
   Edit,
@@ -13,18 +20,20 @@ import {
   Clock,
   User,
   Tag,
-  Calendar,
+  Calendar as CalendarIcon,
   CheckSquare,
   UserPlus,
   UserMinus,
   FileText,
   Flag,
   Paperclip,
+  X,
 } from 'lucide-react';
-import { formatDistanceToNow, format } from 'date-fns';
+import { addDays, formatDistanceToNow, format, startOfDay } from 'date-fns';
 import { tr } from 'date-fns/locale';
 
 const DEFAULT_WORKSPACE_ID = '00000000-0000-0000-0000-000000000001';
+const PAGE_SIZE = 120;
 
 type ActivityLogRow = {
   id: string;
@@ -46,6 +55,15 @@ type UserRow = {
   status?: string | null;
   last_seen?: string | null;
   created_at?: string | null;
+};
+
+type CommentRow = {
+  id: string;
+  content?: string | null;
+  created_at?: string | null;
+  created_by?: string | null;
+  todo_id: string;
+  todo?: { workspace_id?: string | null } | null;
 };
 
 function randomHexColor(): string {
@@ -91,7 +109,7 @@ const actionIcons: Record<string, typeof Plus> = {
   assigned: User,
   label_added: Tag,
   priority_changed: Flag,
-  due_date_changed: Calendar,
+  due_date_changed: CalendarIcon,
   description_changed: FileText,
   title_changed: Edit,
   checklist_added: CheckSquare,
@@ -281,33 +299,75 @@ function formatActionDate(value: unknown): string {
 
 type ActivityLogWithTitle = ActivityLog & { todo_title?: string };
 
+function getDayRange(day: Date): { start: string; end: string } {
+  const start = startOfDay(day);
+  const end = addDays(start, 1);
+  return {
+    start: start.toISOString(),
+    end: end.toISOString(),
+  };
+}
+
 export function ActivityPanel() {
   const [logs, setLogs] = useState<ActivityLogWithTitle[]>([]);
+  const [selectedDay, setSelectedDay] = useState<Date | undefined>(undefined);
+  const [limit, setLimit] = useState(PAGE_SIZE);
+  const [isLoading, setIsLoading] = useState(true);
+  const [hasMore, setHasMore] = useState(false);
 
   useEffect(() => {
     let isMounted = true;
 
     const loadLogs = async () => {
       try {
+        if (isMounted) {
+          setIsLoading(true);
+        }
+
+        const dateRange = selectedDay ? getDayRange(selectedDay) : null;
+
         // Step 1: Fetch both data sources in parallel
+        let activityQuery = supabase
+          .from('activity_logs')
+          .select('*')
+          .eq('workspace_id', DEFAULT_WORKSPACE_ID)
+          .order('created_at', { ascending: false })
+          .limit(limit);
+
+        if (dateRange) {
+          activityQuery = activityQuery
+            .gte('created_at', dateRange.start)
+            .lt('created_at', dateRange.end);
+        }
+
+        let commentQuery = supabase
+          .from('comments')
+          .select('id, content, created_at, created_by, todo_id, todo:todos!inner(workspace_id)')
+          .eq('todo.workspace_id', DEFAULT_WORKSPACE_ID)
+          .order('created_at', { ascending: false })
+          .limit(limit);
+
+        if (dateRange) {
+          commentQuery = commentQuery
+            .gte('created_at', dateRange.start)
+            .lt('created_at', dateRange.end);
+        }
+
         const [activityResult, commentResult] = await Promise.all([
-          supabase
-            .from('activity_logs')
-            .select('*')
-            .eq('workspace_id', DEFAULT_WORKSPACE_ID)
-            .order('created_at', { ascending: false })
-            .limit(200),
-          supabase
-            .from('comments')
-            .select('id, content, created_at, created_by, todo_id')
-            .order('created_at', { ascending: false })
-            .limit(100),
+          activityQuery,
+          commentQuery,
         ]);
 
         if (activityResult.error) throw activityResult.error;
+        if (commentResult.error) throw commentResult.error;
 
         const parsedLogs = (activityResult.data ?? []) as ActivityLogRow[];
-        const commentRows = (commentResult.data ?? []) as any[];
+        const commentRows = ((commentResult.data ?? []) as CommentRow[])
+          .filter((row) => row.todo?.workspace_id === DEFAULT_WORKSPACE_ID);
+
+        if (isMounted) {
+          setHasMore(parsedLogs.length >= limit || commentRows.length >= limit);
+        }
 
         // Step 2: Collect ALL unique user_ids from both sources
         const allUserIds = [...new Set([
@@ -386,14 +446,14 @@ export function ActivityPanel() {
         const commentLogs: ActivityLogWithTitle[] = commentRows.map((c) => ({
           id: `comment-${c.id}`,
           workspace_id: DEFAULT_WORKSPACE_ID,
-          user_id: c.created_by,
+          user_id: c.created_by ?? '',
           action: 'comment_added',
           entity_type: 'comment',
           entity_id: c.todo_id,
           old_values: null,
           new_values: { content: c.content?.slice(0, 80) },
           created_at: c.created_at || new Date().toISOString(),
-          user: usersById.get(c.created_by),
+          user: c.created_by ? usersById.get(c.created_by) : undefined,
           todo_title: todosById.get(c.todo_id) || '',
         }));
 
@@ -408,6 +468,11 @@ export function ActivityPanel() {
       } catch {
         if (isMounted) {
           setLogs([]);
+          setHasMore(false);
+        }
+      } finally {
+        if (isMounted) {
+          setIsLoading(false);
         }
       }
     };
@@ -435,7 +500,7 @@ export function ActivityPanel() {
       isMounted = false;
       void supabase.removeChannel(channel);
     };
-  }, []);
+  }, [limit, selectedDay]);
 
   // Group logs by date
   const groupedLogs = logs.reduce((acc, log) => {
@@ -447,15 +512,97 @@ export function ActivityPanel() {
     return acc;
   }, {} as Record<string, typeof logs>);
 
+  const selectedDayLabel = selectedDay
+    ? format(selectedDay, 'd MMMM yyyy', { locale: tr })
+    : null;
+
   return (
-    <div className="flex-1 p-6 overflow-y-auto">
+    <div className="flex-1 min-h-0 overflow-y-auto p-6 pb-24">
       <div className="max-w-2xl mx-auto">
         {/* Header */}
-        <div className="mb-6">
-          <h1 className="text-2xl font-bold">Aktivite Geçmişi</h1>
-          <p className="text-muted-foreground">
-            Workspace&apos;teki tüm değişiklikler
-          </p>
+        <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-bold">Aktivite Geçmişi</h1>
+            <p className="text-muted-foreground">
+              Workspace&apos;teki tüm değişiklikler
+            </p>
+            <p className="text-xs text-muted-foreground mt-1">
+              {selectedDayLabel
+                ? `${selectedDayLabel} için ${logs.length} kayıt gösteriliyor`
+                : `Tüm tarihlerde ${logs.length} kayıt gösteriliyor`}
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button variant="outline" className="gap-2">
+                  <CalendarIcon className="w-4 h-4" />
+                  {selectedDayLabel || 'Tarih seç'}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-auto p-0">
+                <CalendarPicker
+                  mode="single"
+                  selected={selectedDay}
+                  onSelect={(value) => {
+                    setSelectedDay(value);
+                    setLimit(PAGE_SIZE);
+                  }}
+                  locale={tr}
+                  initialFocus
+                />
+                <div className="border-t p-2 flex items-center justify-end gap-2">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      setSelectedDay(new Date());
+                      setLimit(PAGE_SIZE);
+                    }}
+                  >
+                    Bugün
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      setSelectedDay(undefined);
+                      setLimit(PAGE_SIZE);
+                    }}
+                  >
+                    <X className="w-3.5 h-3.5 mr-1" />
+                    Tümü
+                  </Button>
+                </div>
+              </PopoverContent>
+            </Popover>
+
+            {selectedDay && (
+              <>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setSelectedDay(new Date());
+                    setLimit(PAGE_SIZE);
+                  }}
+                >
+                  Bugün
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setSelectedDay(undefined);
+                    setLimit(PAGE_SIZE);
+                  }}
+                >
+                  Filtreyi temizle
+                </Button>
+              </>
+            )}
+          </div>
         </div>
 
         {/* Timeline */}
@@ -643,13 +790,42 @@ export function ActivityPanel() {
           ))}
         </div>
 
-        {logs.length === 0 && (
+        {logs.length > 0 && hasMore && (
+          <div className="mt-8 flex justify-center">
+            <Button
+              variant="outline"
+              onClick={() => setLimit((prev) => prev + PAGE_SIZE)}
+              disabled={isLoading}
+            >
+              {isLoading ? 'Yükleniyor...' : 'Daha fazla'}
+            </Button>
+          </div>
+        )}
+
+        {logs.length === 0 && !isLoading && (
           <div className="text-center py-12 bg-secondary/30 rounded-xl border-2 border-dashed border-border">
             <Clock className="w-12 h-12 mx-auto mb-3 text-muted-foreground" />
-            <h3 className="font-medium mb-1">Henüz aktivite yok</h3>
+            <h3 className="font-medium mb-1">
+              {selectedDay ? 'Seçilen gün için aktivite yok' : 'Henüz aktivite yok'}
+            </h3>
             <p className="text-sm text-muted-foreground">
-              Görev ekleyerek veya düzenleyerek başlayabilirsiniz
+              {selectedDay
+                ? 'Farklı bir tarih seçin veya tüm aktiviteleri görüntüleyin.'
+                : 'Görev ekleyerek veya düzenleyerek başlayabilirsiniz'}
             </p>
+            {selectedDay && (
+              <div className="mt-4">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setSelectedDay(undefined);
+                    setLimit(PAGE_SIZE);
+                  }}
+                >
+                  Tüm aktiviteleri göster
+                </Button>
+              </div>
+            )}
           </div>
         )}
       </div>
