@@ -1525,13 +1525,40 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       new_values: null,
     });
 
-    get().prependNotification(
-      createLocalStatusNotification(
-        currentUserId,
-        'Kategori silindi',
-        'Kategori basariyla silindi.'
-      )
-    );
+    // Persist the notification to DB so it survives loadWorkspaceData reconciliation
+    try {
+      const { data: notifData, error: notifError } = await supabase
+        .from('notifications')
+        .insert({
+          user_id: currentUserId,
+          type: 'status_change',
+          title: 'Kategori silindi',
+          message: 'Kategori basariyla silindi.',
+          is_read: false,
+        })
+        .select('*')
+        .single();
+
+      if (!notifError && notifData) {
+        get().prependNotification(mapNotificationRow(notifData as NotificationRow));
+      } else {
+        get().prependNotification(
+          createLocalStatusNotification(
+            currentUserId,
+            'Kategori silindi',
+            'Kategori basariyla silindi.'
+          )
+        );
+      }
+    } catch {
+      get().prependNotification(
+        createLocalStatusNotification(
+          currentUserId,
+          'Kategori silindi',
+          'Kategori basariyla silindi.'
+        )
+      );
+    }
   },
 
   reorderCategories: (sourceIndex, destIndex) => {
@@ -2103,6 +2130,67 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         }
       };
 
+      const syncLabels = async () => {
+        if (updates.labels === undefined) {
+          return;
+        }
+
+        try {
+          const { data: dbLabels, error: fetchError } = await supabase
+            .from('todo_labels')
+            .select('*')
+            .eq('todo_id', id);
+
+          if (fetchError) {
+            console.warn('Failed to fetch todo_labels from Supabase:', fetchError);
+            return;
+          }
+
+          const dbLabelRows = (dbLabels ?? []) as { id: string; label_id: string }[];
+          const desiredLabels = updates.labels;
+
+          const dbLabelIdSet = new Set(dbLabelRows.map((r) => r.label_id));
+          const desiredLabelIdSet = new Set(desiredLabels.map((l) => l.label_id));
+
+          const toRemove = dbLabelRows.filter((r) => !desiredLabelIdSet.has(r.label_id));
+          const toAdd = desiredLabels.filter((l) => !dbLabelIdSet.has(l.label_id));
+
+          if (toRemove.length > 0) {
+            const { error: removeError } = await supabase
+              .from('todo_labels')
+              .delete()
+              .in('id', toRemove.map((r) => r.id));
+
+            if (removeError) {
+              console.warn('Failed to remove todo labels in Supabase:', removeError);
+            }
+          }
+
+          if (toAdd.length > 0) {
+            const insertRows = toAdd.map((l) => ({
+              todo_id: id,
+              label_id: l.label_id,
+            }));
+
+            const { error: insertError } = await supabase.from('todo_labels').insert(insertRows);
+
+            if (insertError) {
+              console.warn('Failed to add todo labels in Supabase:', insertError);
+            }
+
+            for (const label of toAdd) {
+              await insertActivity(
+                'label_added',
+                { title: todoTitle, label_id: null },
+                { title: todoTitle, label_id: label.label_id }
+              );
+            }
+          }
+        } catch (labelError) {
+          console.warn('Failed to sync todo labels in Supabase:', labelError);
+        }
+      };
+
       const logClientActivities = async () => {
         // status_changed: DB trigger handles via `updated`, do not insert client-side
         // priority_changed: DB trigger handles via `updated`, do not insert client-side
@@ -2163,6 +2251,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       if (!hasBaseTodoUpdate) {
         await syncAssignees();
         await syncChecklist();
+        await syncLabels();
         await logClientActivities();
         return;
       }
@@ -2183,6 +2272,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
       await syncAssignees();
       await syncChecklist();
+      await syncLabels();
       await logClientActivities();
     })();
   },
@@ -2222,13 +2312,41 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       const deletedRowCount = deleteData?.length ?? 0;
 
       if (!deleteError && deletedRowCount > 0) {
-        get().prependNotification(
-          createLocalStatusNotification(
-            currentUserId,
-            'Gorev silindi',
-            'Gorev basariyla silindi.'
-          )
-        );
+        // Persist the notification to DB so it survives loadWorkspaceData reconciliation
+        try {
+          const { data: notifData, error: notifError } = await supabase
+            .from('notifications')
+            .insert({
+              user_id: currentUserId,
+              type: 'status_change',
+              title: 'Gorev silindi',
+              message: 'Gorev basariyla silindi.',
+              is_read: false,
+            })
+            .select('*')
+            .single();
+
+          if (!notifError && notifData) {
+            get().prependNotification(mapNotificationRow(notifData as NotificationRow));
+          } else {
+            // DB insert failed — fall back to local-only so UX is never blocked
+            get().prependNotification(
+              createLocalStatusNotification(
+                currentUserId,
+                'Gorev silindi',
+                'Gorev basariyla silindi.'
+              )
+            );
+          }
+        } catch {
+          get().prependNotification(
+            createLocalStatusNotification(
+              currentUserId,
+              'Gorev silindi',
+              'Gorev basariyla silindi.'
+            )
+          );
+        }
         return;
       }
 

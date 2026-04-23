@@ -784,10 +784,9 @@ export function TodoDetailModal() {
   };
   // ─────────────────────────────────────────────────────────────────────────────
 
-  // File upload handler
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !selectedTodo || !currentUser) return;
+  // Shared upload logic — called by both the file input handler and the paste handler
+  const uploadFile = async (file: File) => {
+    if (!selectedTodo || !currentUser) return;
 
     if (file.size > 52428800) {
       console.warn('File too large (max 50MB)');
@@ -877,6 +876,41 @@ export function TodoDetailModal() {
       console.warn('File upload error:', err);
     }
   };
+
+  // File input handler — delegates to uploadFile
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    await uploadFile(file);
+  };
+
+  // Paste handler — uploads clipboard images via Ctrl+V
+  useEffect(() => {
+    if (!isTodoModalOpen) return;
+
+    const handlePaste = (event: ClipboardEvent) => {
+      const items = event.clipboardData?.items;
+      if (!items) return;
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (item.kind === 'file' && item.type.startsWith('image/')) {
+          const file = item.getAsFile();
+          if (!file) continue;
+          const fileName = file.name && file.name !== 'image.png'
+            ? file.name
+            : `screenshot-${Date.now()}.png`;
+          const namedFile = new File([file], fileName, { type: file.type });
+          void uploadFile(namedFile);
+          break;
+        }
+      }
+    };
+
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
+  // uploadFile is recreated each render inside the component; listing stable deps only
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isTodoModalOpen, selectedTodo?.id, currentUser?.id]);
 
   const handleDeleteAttachment = async (att: { id: string; file_url: string; file_name: string; file_type: string; file_size: number }) => {
     if (!selectedTodo || !currentUser) return;
@@ -1463,7 +1497,7 @@ export function TodoDetailModal() {
                 <div className="border-2 border-dashed border-border rounded-lg p-6 text-center">
                   <Paperclip className="w-8 h-8 mx-auto mb-2 text-muted-foreground" />
                   <p className="text-sm text-muted-foreground mb-1">
-                    Dosyaları buraya sürükleyin veya tıklayın
+                    Dosyaları buraya sürükleyin, tıklayın veya Ctrl+V ile yapıştırın
                   </p>
                   <p className="text-xs text-muted-foreground/70 mb-3">
                     Maksimum dosya boyutu: <span className="font-medium text-orange-500">50 MB</span> · Ekler <span className="font-medium">5 gün</span> sonra otomatik silinir

@@ -886,8 +886,8 @@ export function Workspace() {
         const todo = store.todos.find((t) => t.id === row.todo_id);
         if (!todo) return false;
         if (!row.id || !row.label_id) return false;
-        // Dedupe
-        if ((todo.labels ?? []).some((l) => l.id === row.id)) return true;
+        // Dedupe: match by entry UUID OR by label_id (covers optimistic tl-* entries)
+        if ((todo.labels ?? []).some((l) => l.id === row.id || l.label_id === row.label_id)) return true;
 
         const labelsById = new Map(store.labels.map((l) => [l.id, l]));
         const newLabel: TodoLabel = {
@@ -896,7 +896,9 @@ export function Workspace() {
           label_id: row.label_id,
           label: labelsById.get(row.label_id),
         };
-        const updatedLabels = [...(todo.labels ?? []), newLabel];
+        // Remove any lingering optimistic entry with the same label_id before appending real row
+        const cleanedLabels = (todo.labels ?? []).filter((l) => l.label_id !== row.label_id);
+        const updatedLabels = [...cleanedLabels, newLabel];
 
         useWorkspaceStore.setState((state) => ({
           todos: state.todos.map((t) =>
